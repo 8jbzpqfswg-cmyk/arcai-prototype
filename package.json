@@ -1,0 +1,10 @@
+{
+  "name": "arcai-shot-motion-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ArcAI basketball shot motion analysis prototype PWA and local API.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "UNLICENSED"
+}

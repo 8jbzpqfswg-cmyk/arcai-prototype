@@ -1,0 +1,17 @@
+{
+  "name": "ArcAI Shot Motion Lab",
+  "short_name": "ArcAI",
+  "description": "Basketball shot motion analysis prototype with black-background overlay and API contract.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#08090b",
+  "theme_color": "#ff9427",
+  "icons": [
+    {
+      "src": "./assets/arcai-logo.png",
+      "sizes": "1024x443",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

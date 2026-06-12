@@ -1,0 +1,134 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArcAI Prototype API",
+    "version": "0.1.0",
+    "description": "Prototype API for basketball shot motion analysis. Current implementation returns metadata-derived demo values and does not infer true biomechanics from video pixels."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4173"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "API status"
+          }
+        }
+      }
+    },
+    "/api/evidence": {
+      "get": {
+        "summary": "Evidence sources used by the prototype",
+        "responses": {
+          "200": {
+            "description": "Evidence source list"
+          }
+        }
+      }
+    },
+    "/api/analyze": {
+      "post": {
+        "summary": "Create a prototype shot analysis",
+        "description": "Accepts video metadata in this prototype. Production should accept an uploaded video asset ID and validated detector outputs.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoMetadata"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prototype analysis result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShotAnalysis"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkout": {
+      "post": {
+        "summary": "Create checkout session placeholder",
+        "description": "Returns 501 until Stripe secret keys and price IDs are configured server-side.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "501": {
+            "description": "Checkout not configured"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "VideoMetadata": {
+        "type": "object",
+        "properties": {
+          "file_name": { "type": "string" },
+          "file_size_bytes": { "type": "integer" },
+          "media_type": { "type": "string" }
+        }
+      },
+      "CheckoutRequest": {
+        "type": "object",
+        "required": ["plan", "cadence"],
+        "properties": {
+          "plan": { "type": "string", "enum": ["starter", "pro", "clinic"] },
+          "cadence": { "type": "string", "enum": ["monthly", "annual"] }
+        }
+      },
+      "ShotAnalysis": {
+        "type": "object",
+        "properties": {
+          "analysis_id": { "type": "string" },
+          "mode": { "type": "string" },
+          "status": { "type": "string" },
+          "shot_score": { "type": "number" },
+          "recommendation": { "type": "string" },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "release_angle_deg": { "type": "number" },
+              "entry_arc_deg": { "type": "number" },
+              "arc_height_m": { "type": "number" },
+              "release_height_m": { "type": "number" },
+              "shot_depth_cm": { "type": "number" },
+              "left_right_cm": { "type": "number" },
+              "elbow_extension_peak_dps": { "type": "number" },
+              "wrist_flexion_peak_dps": { "type": "number" },
+              "knee_extension_peak_dps": { "type": "number" },
+              "hip_extension_peak_dps": { "type": "number" },
+              "kinetic_chain_index": { "type": "number" },
+              "grf_release_coupling_ms": { "type": "number" },
+              "dip_to_set_smoothness": { "type": "number" },
+              "shot_plane_variance_deg": { "type": "number" },
+              "terminal_curvature_stability": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="ArcAI basketball shot analysis app prototype with splash, upload, analyzing, and result screens."
+    />
+    <title>ArcAI</title>
+    <link rel="manifest" href="./manifest.webmanifest?v=20260612-arcai-20" />
+    <link rel="stylesheet" href="./styles.css?v=20260612-arcai-20" />
+  </head>
+  <body>
+    <section class="splash active" id="splash" aria-label="ArcAI splash">
+      <img src="./assets/arcai-logo.png" alt="ArcAI" />
+    </section>
+
+    <main class="phone" id="app">
+      <section class="screen home-screen active" data-screen="home" aria-labelledby="homeTitle">
+        <header class="screen-label">Home</header>
+        <div class="home-center">
+          <h1 id="homeTitle" class="wordmark">Arc<span>AI</span></h1>
+          <p data-i18n="homeSubtitle">Analyze Your Shot</p>
+          <label class="upload-button" for="videoInput" data-i18n="uploadVideo">Upload Video</label>
+          <input id="videoInput" type="file" accept="video/*" hidden />
+          <button class="quiet-button" type="button" data-action="demo" data-i18n="demoAnalysis">Demo Analysis</button>
+        </div>
+      </section>
+
+      <section class="screen analyzing-screen" data-screen="analyzing" aria-labelledby="analyzingTitle">
+        <header class="screen-label">Analyzing</header>
+        <div class="analyzing-center">
+          <h2 id="analyzingTitle" data-i18n="analyzingTitle">Analyzing...</h2>
+          <p id="analysisMessage">AI is analyzing your shot</p>
+          <div class="arc-dots" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="soft-progress">
+            <div id="progressBar"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen result-screen" data-screen="result" aria-labelledby="resultTitle">
+        <header class="result-top">
+          <span class="screen-label">Result</span>
+          <div class="top-actions">
+            <div class="language-switch" aria-label="Language">
+              <button class="active" type="button" data-lang="ja">JP</button>
+              <button type="button" data-lang="en">EN</button>
+            </div>
+            <button class="small-action" type="button" data-action="home">Home</button>
+          </div>
+        </header>
+
+        <div class="result-content">
+          <h2 id="resultTitle" data-i18n="resultTitle">Shot record</h2>
+
+          <section class="analysis-brief" aria-label="ArcAI analysis stance">
+            <div>
+              <span data-i18n="briefKicker">Observation-first</span>
+              <strong data-i18n="briefTitle">Data for coach discussion</strong>
+            </div>
+            <p data-i18n="briefBody">ArcAI visualizes measurable motion and comparison data. It does not prescribe coaching corrections.</p>
+          </section>
+
+          <article class="video-panel original-panel">
+            <div class="panel-title">
+              <span data-i18n="originalLabel">Original</span>
+              <div class="panel-actions">
+                <span id="videoName">Demo profile</span>
+                <button class="inline-action" type="button" data-action="rim" data-i18n="setRim">Set Rim</button>
+                <button class="inline-action ghost" type="button" data-action="ball" data-i18n="setBall">Set Ball</button>
+              </div>
+            </div>
+            <div class="playback-controls" aria-label="Playback speed">
+              <span data-i18n="speedLabel">Speed</span>
+              <button type="button" data-speed="0.25">0.25x</button>
+              <button type="button" data-speed="0.5">0.5x</button>
+              <button class="active" type="button" data-speed="1">1x</button>
+            </div>
+            <div class="video-box">
+              <video id="sourceVideo" playsinline controls muted></video>
+              <div class="video-placeholder" id="videoPlaceholder" data-i18n="originalVideo">Original Video</div>
+              <div class="video-issue hidden" id="videoIssue"></div>
+              <div class="rim-pick-layer hidden" id="rimPickLayer">
+                <strong>Tap rim center</strong>
+                <span>Then tap the rim edge to calibrate scale.</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="video-panel reconstruction-panel">
+            <div class="panel-title">
+              <span>ArcAI View</span>
+              <span id="engineStatus">Pose API pending</span>
+            </div>
+            <div class="playback-controls" aria-label="ArcAI playback speed">
+              <span data-i18n="slowMotionLabel">Slow</span>
+              <button type="button" data-speed="0.25">0.25x</button>
+              <button type="button" data-speed="0.5">0.5x</button>
+              <button class="active" type="button" data-speed="1">1x</button>
+            </div>
+            <nav class="view-tabs" aria-label="ArcAI reconstruction views">
+              <button class="active" type="button" data-view="full">Full</button>
+              <button type="button" data-view="body">Body Zoom</button>
+              <button type="button" data-view="compare">Compare</button>
+            </nav>
+            <div class="canvas-box">
+              <canvas id="overlayCanvas" aria-label="ArcAI reconstruction"></canvas>
+            </div>
+          </article>
+
+          <nav class="result-tabs" aria-label="Analysis categories">
+            <button class="active" type="button" data-tab="ball">Ball</button>
+            <button type="button" data-tab="body">Body</button>
+            <button type="button" data-tab="chain">Chain</button>
+            <button type="button" data-tab="force">Force</button>
+          </nav>
+
+          <div class="metric-card" id="metricCard"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js?v=20260612-arcai-20"></script>
+  </body>
+</html>

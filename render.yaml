@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: arcai-prototype
+    env: docker
+    plan: free
+    autoDeploy: false
+    healthCheckPath: /api/health

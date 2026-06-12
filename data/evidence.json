@@ -1,0 +1,46 @@
+{
+  "checked_at": "2026-06-10",
+  "scope_note": "Only publicly visible sources were used. This file does not claim to cover every basketball shooting product in the world.",
+  "sources": [
+    {
+      "name": "HomeCourt",
+      "url": "https://www.homecourt.ai/",
+      "relevance": "Public product page states that the app tracks makes, misses, attempts, shooting percentage, progress over time, and skill ratings."
+    },
+    {
+      "name": "Noah Basketball",
+      "url": "https://www.noahbasketball.com/",
+      "relevance": "Public product page lists shot arc, depth, left-right data, and gives benchmark values of 45 degrees arc, 11 inches depth, and 0 inches left-right."
+    },
+    {
+      "name": "ShotTracker",
+      "url": "https://shottracker.com/",
+      "relevance": "Public product page states it provides real-time stats, lineup efficiencies, video breakdowns, and more than 70 advanced statistics."
+    },
+    {
+      "name": "MediaPipe Pose Landmarker",
+      "url": "https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker",
+      "relevance": "Official Google AI Edge documentation describes pose landmark detection for images and video, which is a credible basis for a future pose adapter."
+    },
+    {
+      "name": "Penner, 2021",
+      "url": "https://arxiv.org/abs/2506.13779",
+      "relevance": "The referenced research summary reports that the shot dip shows a U-shaped relationship with three-point shooting percentage in NBA tracking data."
+    },
+    {
+      "name": "Barzykina et al., 2025",
+      "url": "https://arxiv.org/abs/2506.13779",
+      "relevance": "The paper's abstract describes prediction of shot success from player position and orientation variables, supporting ArcAI's event-and-body-orientation API fields."
+    },
+    {
+      "name": "Zhu et al., 2026",
+      "url": "https://arxiv.org/abs/2602.03177",
+      "relevance": "The paper describes using temporal graph neural networks to predict ground reaction forces and moments from marker data, relevant to future GRF estimator design."
+    },
+    {
+      "name": "Stripe Checkout",
+      "url": "https://docs.stripe.com/checkout/quickstart",
+      "relevance": "Official Stripe documentation covers creating a hosted checkout session; ArcAI's prototype keeps payments behind a server endpoint until keys and products are configured."
+    }
+  ]
+}
