@@ -59,7 +59,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260613-arcai-22";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260614-arcai-23";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
