@@ -458,7 +458,7 @@ button {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.78rem 0.72rem 1.05rem;
+  padding: 0.78rem 0.72rem 2.4rem;
   scrollbar-width: thin;
   scrollbar-color: rgba(52, 48, 45, 0.28) transparent;
 }
@@ -856,6 +856,7 @@ button {
   font-size: 0.76rem;
   font-weight: 680;
   line-height: 1.38;
+  overflow-wrap: anywhere;
 }
 
 .metric-detail b {
@@ -903,7 +904,7 @@ button {
 
 @media (max-width: 390px), (max-height: 760px) {
   .screen {
-    padding: 0.55rem;
+    padding: 0.55rem 0.55rem 2.6rem;
   }
 
   .home-screen::after,
@@ -930,7 +931,7 @@ button {
   .result-content {
     grid-template-rows: auto auto auto auto auto auto;
     gap: 0.58rem;
-    padding: 0.55rem;
+    padding: 0.55rem 0.55rem 2.6rem;
   }
 
   .result-content h2 {

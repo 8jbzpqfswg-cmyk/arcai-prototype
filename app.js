@@ -1630,7 +1630,7 @@ function computeBallMetrics() {
   const trail = stableBallTrail();
   const metersPerPixel = rimMetersPerPixel();
   if (!state.rim?.center || !metersPerPixel || trail.length < 5) {
-    state.analysis.metrics.ball_track_confidence = rawTrail.length ? roundMetric(clamp(rawTrail.length / 18, 0, 1) * 100, 0) : null;
+    state.analysis.metrics.ball_track_confidence = null;
     state.analysis.metrics.release_angle_deg = null;
     state.analysis.metrics.entry_arc_deg = null;
     state.analysis.metrics.arc_height_m = null;
@@ -1859,74 +1859,16 @@ function courtFloorY(rect) {
 }
 
 function drawPerspectiveCourt(ctx, rect, floorY, scale) {
-  const depth = clamp(rect.height * 0.18, 30 * scale, 74 * scale);
-  const nearY = floorY;
-  const farY = floorY - depth;
-  const leftNear = rect.x + rect.width * 0.02;
-  const rightNear = rect.x + rect.width * 0.98;
-  const leftFar = rect.x + rect.width * 0.16;
-  const rightFar = rect.x + rect.width * 0.84;
-  const range = estimateShotRangeMeters();
-  const longRange = Number.isFinite(range) && range > 5.4;
-  const midRange = Number.isFinite(range) && range > 2.8 && !longRange;
-  const courtLine = "rgba(255, 255, 255, .16)";
-  const focusLine = "rgba(255, 196, 0, .72)";
-
-  const interp = (a, b, ratio) => a + (b - a) * ratio;
-  const lineAt = (ratio) => ({
-    y: interp(nearY, farY, ratio),
-    left: interp(leftNear, leftFar, ratio),
-    right: interp(rightNear, rightFar, ratio)
-  });
-
   ctx.save();
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = courtLine;
-  ctx.lineWidth = 1.05 * scale;
+  ctx.strokeStyle = "rgba(255,255,255,.2)";
+  ctx.lineWidth = 1.25 * scale;
   ctx.beginPath();
-  ctx.moveTo(leftNear, nearY);
-  ctx.lineTo(leftFar, farY);
-  ctx.lineTo(rightFar, farY);
-  ctx.lineTo(rightNear, nearY);
-  ctx.closePath();
+  ctx.moveTo(rect.x + rect.width * 0.04, floorY);
+  ctx.lineTo(rect.x + rect.width * 0.96, floorY);
   ctx.stroke();
-
-  [0.28, 0.56, 0.82].forEach((ratio) => {
-    const segment = lineAt(ratio);
-    ctx.globalAlpha = 0.72;
-    ctx.beginPath();
-    ctx.moveTo(segment.left, segment.y);
-    ctx.lineTo(segment.right, segment.y);
-    ctx.stroke();
-  });
-  ctx.globalAlpha = 1;
-
-  const laneNear = lineAt(0.2);
-  const laneFar = lineAt(0.76);
-  ctx.strokeStyle = midRange ? focusLine : "rgba(255, 255, 255, .18)";
-  ctx.lineWidth = midRange ? 1.7 * scale : 1.1 * scale;
-  ctx.beginPath();
-  ctx.moveTo(interp(laneNear.left, laneNear.right, 0.39), laneNear.y);
-  ctx.lineTo(interp(laneFar.left, laneFar.right, 0.43), laneFar.y);
-  ctx.moveTo(interp(laneNear.left, laneNear.right, 0.61), laneNear.y);
-  ctx.lineTo(interp(laneFar.left, laneFar.right, 0.57), laneFar.y);
-  ctx.moveTo(interp(laneFar.left, laneFar.right, 0.31), laneFar.y);
-  ctx.lineTo(interp(laneFar.left, laneFar.right, 0.69), laneFar.y);
-  ctx.stroke();
-
-  ctx.strokeStyle = longRange ? focusLine : "rgba(255, 255, 255, .18)";
-  ctx.lineWidth = longRange ? 1.85 * scale : 1.15 * scale;
-  const arcCenterX = rect.x + rect.width * 0.5;
-  const arcCenterY = nearY + depth * 0.42;
-  ctx.beginPath();
-  ctx.ellipse(arcCenterX, arcCenterY, rect.width * 0.46, depth * 0.62, 0, Math.PI * 1.05, Math.PI * 1.95);
-  ctx.stroke();
-
-  ctx.fillStyle = "rgba(255,255,255,.46)";
+  ctx.fillStyle = "rgba(255,255,255,.5)";
   ctx.font = "700 9px Inter, sans-serif";
-  const rangeLabel = Number.isFinite(range) ? `range est. ${range.toFixed(1)}m` : "range pending";
-  ctx.fillText(`court / ${rangeLabel}`, rect.x + 12, Math.max(rect.y + 20, farY - 8));
+  ctx.fillText("floor guide / court lines uncalibrated", rect.x + 12, Math.max(rect.y + 20, floorY - 12));
   ctx.restore();
 }
 
@@ -1935,46 +1877,15 @@ function drawVirtualRimScene(ctx, rect, scale) {
   const center = mapNormalizedPoint(state.rim.center, rect);
   const radiusX = clamp((state.rim.radiusX || 0.024) * rect.width, 7 * scale, 22 * scale);
   const radiusY = radiusX * 0.22;
-  const sample = state.poseSamples[state.poseSamples.length - 1];
-  const athleteX = sample?.footX ?? 0.5;
-  const side = state.rim.center.x < athleteX ? -1 : 1;
-  const boardX = center.x + side * radiusX * 2.35;
-  const boardTop = center.y - radiusX * 3.5;
-  const boardBottom = center.y + radiusX * 3.2;
-  const supportX = boardX + side * radiusX * 3.1;
-  const floorY = clamp(courtFloorY(rect), center.y + radiusX * 4.2, rect.y + rect.height - 8);
-
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(rect.x, rect.y, rect.width, rect.height);
-  ctx.clip();
-
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = "rgba(255,255,255,.18)";
-  ctx.lineWidth = 1.1 * scale;
-  ctx.beginPath();
-  ctx.moveTo(boardX, boardTop);
-  ctx.lineTo(boardX, boardBottom);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(255,255,255,.12)";
-  ctx.beginPath();
-  ctx.moveTo(boardX, boardBottom);
-  ctx.lineTo(supportX, floorY);
-  ctx.moveTo(boardX, center.y);
-  ctx.lineTo(supportX, center.y + radiusX * 1.4);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(255, 196, 0, .78)";
+  ctx.strokeStyle = "rgba(255,196,0,.78)";
   ctx.lineWidth = 1.8 * scale;
   ctx.beginPath();
   ctx.ellipse(center.x, center.y, radiusX, radiusY, 0, 0, Math.PI * 2);
   ctx.stroke();
-
   ctx.fillStyle = "rgba(255,255,255,.46)";
   ctx.font = "700 9px Inter, sans-serif";
-  ctx.fillText("virtual rim / board / support", rect.x + 12, Math.max(rect.y + 20, boardTop - 8));
+  ctx.fillText("virtual rim guide / support uncalibrated", rect.x + 12, Math.max(rect.y + 20, center.y - radiusX * 3));
   ctx.restore();
 }
 
@@ -2007,49 +1918,15 @@ function drawBallTrail(ctx, rect, scale) {
 }
 
 function drawCourtAndForceProxy(ctx, rect, scale) {
-  const sample = state.poseSamples[state.poseSamples.length - 1];
-  if (!sample) return;
   const floorY = courtFloorY(rect);
-  const footX = clamp(rect.x + sample.footX * rect.width, rect.x + 10, rect.x + rect.width - 10);
-  const forceScore = state.analysis?.metrics?.vgrf_proxy_peak_bw;
-  const forceRatio = clamp((forceScore || 50) / 100, 0.24, 1);
-  const arrowSize = clamp(rect.height * (0.12 + forceRatio * 0.22), 34 * scale, 108 * scale);
-
   ctx.save();
   ctx.beginPath();
   ctx.rect(rect.x, rect.y, rect.width, rect.height);
   ctx.clip();
-
   drawPerspectiveCourt(ctx, rect, floorY, scale);
-
-  ctx.strokeStyle = "rgba(255, 196, 0, .88)";
-  ctx.fillStyle = "rgba(255, 196, 0, .88)";
-  ctx.lineWidth = 3.2 * scale;
-  const from = point(footX, floorY + 2);
-  const to = point(footX, floorY - arrowSize);
-  ctx.shadowColor = "rgba(255, 196, 0, .62)";
-  ctx.shadowBlur = 8 * scale;
-  ctx.beginPath();
-  ctx.moveTo(from.x, from.y);
-  ctx.lineTo(to.x, to.y);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(to.x, to.y);
-  ctx.lineTo(to.x - 7 * scale, to.y + 14 * scale);
-  ctx.lineTo(to.x + 7 * scale, to.y + 14 * scale);
-  ctx.closePath();
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  ctx.fillStyle = "rgba(255, 196, 0, .18)";
-  ctx.beginPath();
-  ctx.ellipse(footX, floorY + 3 * scale, 22 * scale, 4.8 * scale, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.font = "800 10px Inter, sans-serif";
-  ctx.fillStyle = "rgba(255,255,255,.58)";
-  const labelX = clamp(footX + 8, rect.x + 10, rect.x + rect.width - 68);
-  ctx.fillText("vGRF proxy", labelX, Math.max(rect.y + 22, to.y - 6));
+  ctx.fillStyle = "rgba(255,255,255,.5)";
+  ctx.font = "700 9px Inter, sans-serif";
+  ctx.fillText("vGRF proxy pending / no force-plate data", rect.x + 12, floorY - 28 * scale);
   ctx.restore();
 }
 
@@ -2230,7 +2107,7 @@ function drawCanvas() {
   ctx.textAlign = "left";
   const rimLabel = state.rim?.center ? "rim calibrated" : "tap Set Rim";
   const stableTrail = stableBallTrail();
-  const ballLabel = stableTrail.length >= 5 ? "stable ball trail" : state.ballTrail.length >= 3 ? "ball verifying" : "ball pending";
+  const ballLabel = stableTrail.length >= 5 ? "ball trail locked" : state.ballTrail.length >= 3 ? "ball candidates unverified" : "ball pending";
   ctx.fillText(state.activeView === "full" ? `${rimLabel} / ${ballLabel}` : state.activeView, 18, 25);
   ctx.restore();
 
