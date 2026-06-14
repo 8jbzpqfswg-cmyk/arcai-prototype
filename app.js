@@ -50,6 +50,8 @@ const state = {
   previousLuma: null,
   lastMotionTime: -1,
   lastBallCandidate: null,
+  ballTemplate: null,
+  ballTemplateMisses: 0,
   ballTrail: [],
   lastBallTime: -1,
   ballStatus: "pending",
@@ -59,7 +61,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260614-arcai-23";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260614-arcai-24";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -640,6 +642,8 @@ function setVideo(file) {
   state.previousLuma = null;
   state.lastMotionTime = -1;
   state.lastBallCandidate = null;
+  state.ballTemplate = null;
+  state.ballTemplateMisses = 0;
   state.ballTrail = [];
   state.lastBallTime = -1;
   state.ballStatus = "pending";
@@ -682,6 +686,8 @@ function setTranscodedVideo(url, originalName) {
   state.previousLuma = null;
   state.lastMotionTime = -1;
   state.lastBallCandidate = null;
+  state.ballTemplate = null;
+  state.ballTemplateMisses = 0;
   state.ballTrail = [];
   state.lastBallTime = -1;
   state.ballStatus = "pending";
@@ -1224,6 +1230,7 @@ function handleRimPick(event) {
   }
 
   if (state.rimPickMode === "ball") {
+    createBallTemplate(p);
     pushBallCandidate({
       normalized: point(p.x, p.y),
       x: 0,
@@ -1231,6 +1238,7 @@ function handleRimPick(event) {
       radius: Math.max(4, (state.rim?.radiusX || 0.018) * (nodes.sourceVideo.videoWidth || 480) * 0.5),
       confidence: 0.92,
       nearPose: false,
+      source: "manual",
       seeded: true
     });
     state.rimPickMode = "idle";
@@ -1565,6 +1573,144 @@ function componentCenter(component) {
   return point(component.sx / component.count, component.sy / component.count);
 }
 
+function setupMotionProbe() {
+  const video = nodes.sourceVideo;
+  const probe = state.motionCanvas;
+  const probeWidth = 192;
+  const probeHeight = Math.max(80, Math.round((video.videoHeight / video.videoWidth) * probeWidth));
+  if (probe.width !== probeWidth || probe.height !== probeHeight) {
+    probe.width = probeWidth;
+    probe.height = probeHeight;
+    state.previousLuma = null;
+  }
+  return { probe, probeWidth, probeHeight };
+}
+
+function readMotionFrame() {
+  if (!decodedVideoIsUsable()) return null;
+  const { probe, probeWidth, probeHeight } = setupMotionProbe();
+  const ctx = probe.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(nodes.sourceVideo, 0, 0, probeWidth, probeHeight);
+  const data = ctx.getImageData(0, 0, probeWidth, probeHeight).data;
+  const luma = new Uint8Array(probeWidth * probeHeight);
+  for (let index = 0; index < luma.length; index += 1) {
+    const offset = index * 4;
+    luma[index] = Math.round(data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114);
+  }
+  return { data, luma, probeWidth, probeHeight };
+}
+
+function createBallTemplate(normalized) {
+  const frame = readMotionFrame();
+  if (!frame) return null;
+  const { data, probeWidth, probeHeight } = frame;
+  const cx = clamp(Math.round(normalized.x * probeWidth), 0, probeWidth - 1);
+  const cy = clamp(Math.round(normalized.y * probeHeight), 0, probeHeight - 1);
+  const rimRadius = state.rim?.radiusX ? state.rim.radiusX * probeWidth : 5.5;
+  const radius = Math.round(clamp(rimRadius * 0.72, 4, 9));
+  const samples = [];
+  for (let dy = -radius; dy <= radius; dy += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      if (dx * dx + dy * dy > radius * radius) continue;
+      const x = cx + dx;
+      const y = cy + dy;
+      if (x < 0 || x >= probeWidth || y < 0 || y >= probeHeight) continue;
+      const offset = (y * probeWidth + x) * 4;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      samples.push({
+        dx,
+        dy,
+        r,
+        g,
+        b,
+        l: Math.round(r * 0.299 + g * 0.587 + b * 0.114)
+      });
+    }
+  }
+  if (samples.length < 16) return null;
+  state.ballTemplate = {
+    center: point(cx / probeWidth, cy / probeHeight),
+    last: point(cx / probeWidth, cy / probeHeight),
+    radius,
+    samples,
+    createdAt: nodes.sourceVideo.currentTime || 0
+  };
+  state.ballTemplateMisses = 0;
+  state.previousLuma = null;
+  state.lastMotionTime = -1;
+  return state.ballTemplate;
+}
+
+function detectBallByTemplate(rect, frame) {
+  const template = state.ballTemplate;
+  if (!template || !frame) return null;
+  const { data, luma, probeWidth, probeHeight } = frame;
+  const lastTrail = state.ballTrail[state.ballTrail.length - 1];
+  const anchor = lastTrail?.normalized || template.last || template.center;
+  const anchorX = clamp(Math.round(anchor.x * probeWidth), 0, probeWidth - 1);
+  const anchorY = clamp(Math.round(anchor.y * probeHeight), 0, probeHeight - 1);
+  const searchRadius = Math.round(clamp(18 + state.ballTemplateMisses * 7, 18, 48));
+  const step = state.ballTemplateMisses > 2 ? 3 : 2;
+  let best = null;
+
+  for (let y = Math.max(template.radius, anchorY - searchRadius); y <= Math.min(probeHeight - template.radius - 1, anchorY + searchRadius); y += step) {
+    for (let x = Math.max(template.radius, anchorX - searchRadius); x <= Math.min(probeWidth - template.radius - 1, anchorX + searchRadius); x += step) {
+      let error = 0;
+      let motion = 0;
+      let count = 0;
+      for (const sample of template.samples) {
+        const sx = x + sample.dx;
+        const sy = y + sample.dy;
+        if (sx < 0 || sx >= probeWidth || sy < 0 || sy >= probeHeight) continue;
+        const index = sy * probeWidth + sx;
+        const offset = index * 4;
+        const dr = Math.abs(data[offset] - sample.r);
+        const dg = Math.abs(data[offset + 1] - sample.g);
+        const db = Math.abs(data[offset + 2] - sample.b);
+        const dl = Math.abs(luma[index] - sample.l);
+        error += dl * 0.55 + ((dr + dg + db) / 3) * 0.45;
+        if (state.previousLuma) motion += Math.abs(luma[index] - state.previousLuma[index]);
+        count += 1;
+      }
+      if (!count) continue;
+      const avgError = error / count;
+      const similarity = 1 - clamp((avgError - 8) / 54, 0, 1);
+      const normalized = point(x / probeWidth, y / probeHeight);
+      const continuity = 1 - clamp(distance(normalized, anchor) / 0.24, 0, 1);
+      const motionScore = state.previousLuma ? clamp((motion / count - 5) / 26, 0, 1) : 0.45;
+      const confidence = clamp(similarity * 0.68 + continuity * 0.22 + motionScore * 0.1, 0, 1);
+      if (!best || confidence > best.confidence) {
+        best = {
+          normalized,
+          confidence,
+          similarity,
+          motionScore
+        };
+      }
+    }
+  }
+
+  if (!best || best.confidence < 0.58 || best.similarity < 0.56) {
+    state.ballTemplateMisses += 1;
+    return null;
+  }
+
+  state.ballTemplateMisses = 0;
+  template.last = best.normalized;
+  return {
+    normalized: best.normalized,
+    x: rect.x + best.normalized.x * rect.width,
+    y: rect.y + best.normalized.y * rect.height,
+    radius: clamp(template.radius * (rect.width / probeWidth), 3.2, 10),
+    confidence: best.confidence,
+    nearPose: false,
+    source: "template"
+  };
+}
+
+
 function pushBallCandidate(candidate) {
   if (!candidate) return;
   const video = nodes.sourceVideo;
@@ -1574,7 +1720,8 @@ function pushBallCandidate(candidate) {
   if (last) {
     const gap = Math.abs(time - last.time);
     const jump = distance(candidate.normalized, last.normalized);
-    const maxJump = last.seeded || candidate.seeded ? 0.14 : 0.11;
+    const assisted = last.seeded || candidate.seeded || last.source === "template" || candidate.source === "template";
+    const maxJump = assisted ? 0.18 : 0.11;
     if (gap < 0.32 && jump > maxJump) {
       state.ballStatus = "unstable";
       return;
@@ -1588,7 +1735,7 @@ function pushBallCandidate(candidate) {
 }
 
 function stableBallTrail() {
-  const raw = state.ballTrail.filter((item) => item.confidence >= 0.5 || item.seeded);
+  const raw = state.ballTrail.filter((item) => item.seeded || item.confidence >= (item.source === "template" ? 0.52 : 0.5));
   if (raw.length < 5) return [];
   const cleaned = [raw[0]];
   for (let index = 1; index < raw.length; index += 1) {
@@ -1720,6 +1867,16 @@ function detectBallCandidate(rect, landmarks) {
   const video = nodes.sourceVideo;
   if (!decodedVideoIsUsable()) return null;
   if (Math.abs(video.currentTime - state.lastMotionTime) < 0.075) return state.lastBallCandidate;
+
+  const templateFrame = readMotionFrame();
+  const templateCandidate = detectBallByTemplate(rect, templateFrame);
+  if (templateCandidate) {
+    state.previousLuma = templateFrame.luma;
+    state.lastMotionTime = video.currentTime;
+    state.lastBallCandidate = templateCandidate;
+    pushBallCandidate(templateCandidate);
+    return templateCandidate;
+  }
 
   const probe = state.motionCanvas;
   const probeWidth = 192;
