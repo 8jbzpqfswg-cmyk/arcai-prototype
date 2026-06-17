@@ -11,7 +11,7 @@ const LOCAL_FFMPEG_PATH = path.join(ROOT, "bin", "ffmpeg.exe");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(LOCAL_FFMPEG_PATH) ? LOCAL_FFMPEG_PATH : "ffmpeg");
 const PYTHON_PATH = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
 const YOLO_SCRIPT = path.join(ROOT, "scripts", "arcai_yolo_ball_track.py");
-const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || "yolov8x.pt";
+const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || "yolov8n.pt";
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -232,6 +232,15 @@ function safeFilePath(urlPath) {
   return resolved;
 }
 
+function safeTranscodedPath(urlPath) {
+  const decoded = decodeURIComponent(String(urlPath || "").split("?")[0]);
+  if (!decoded.startsWith("/transcoded/")) return null;
+  const resolved = path.resolve(ROOT, `.${decoded}`);
+  if (!resolved.startsWith(TRANSCODE_DIR)) return null;
+  if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) return null;
+  return resolved;
+}
+
 async function handleApi(request, response, pathname) {
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
@@ -277,19 +286,38 @@ async function handleApi(request, response, pathname) {
       const outputPath = path.join(TRANSCODE_DIR, `${id}.mp4`);
       fs.writeFileSync(inputPath, file.buffer);
       await runFfmpeg(inputPath, outputPath);
-      const ballTrack = await runYoloBallTrack(outputPath);
       return sendJson(response, 200, {
         ok: true,
         source: file.filename,
         url: `/transcoded/${id}.mp4`,
         bytes: fs.statSync(outputPath).size,
-        codec: "h264/aac",
-        ball_track: ballTrack
+        codec: "h264/aac"
       });
     } catch (error) {
       return sendJson(response, 500, {
         ok: false,
         error: "transcode_failed",
+        message: error.message
+      });
+    }
+  }
+
+  if (request.method === "POST" && pathname === "/api/ball-track") {
+    try {
+      const payload = await readBody(request);
+      const videoPath = safeTranscodedPath(payload.url);
+      if (!videoPath) {
+        return sendJson(response, 400, {
+          ok: false,
+          error: "invalid_video_url"
+        });
+      }
+      const ballTrack = await runYoloBallTrack(videoPath);
+      return sendJson(response, ballTrack.ok ? 200 : 500, ballTrack);
+    } catch (error) {
+      return sendJson(response, 500, {
+        ok: false,
+        error: "ball_track_failed",
         message: error.message
       });
     }

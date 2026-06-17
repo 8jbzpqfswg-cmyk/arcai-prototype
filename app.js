@@ -67,7 +67,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-29";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-30";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -919,6 +919,28 @@ async function transcodeVideo(file) {
   return payload;
 }
 
+async function detectServerBallTrack(videoUrl) {
+  const endpoint = new URL("/api/ball-track", window.location.href);
+  if (window.location.protocol === "file:") endpoint.href = "http://localhost:4173/api/ball-track";
+  const response = await fetch(endpoint.href, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ url: videoUrl })
+  });
+  const text = await response.text();
+  if (!text) throw new Error(`Ball detector returned an empty response (HTTP ${response.status}).`);
+  let payload = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error(`Ball detector returned non-JSON response (HTTP ${response.status}).`);
+  }
+  if (!response.ok || !payload.ok) throw new Error(payload.message || payload.error || "ball detection failed");
+  return payload;
+}
+
 function decodedVideoIsUsable() {
   const video = nodes.sourceVideo;
   return video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
@@ -1032,20 +1054,34 @@ async function runAnalysis(file) {
   const likelyHevc = codec?.hvc1 || codec?.hev1;
 
   if (file) {
-    showVideoIssue("Preparing video", "ArcAI is converting the video and detecting the ball automatically.");
-    setEngineStatus("Detecting ball");
-    nodes.analysisMessage.textContent = "Detecting ball with YOLO";
+    showVideoIssue("Preparing video", "ArcAI is creating a browser-readable MP4.");
+    setEngineStatus("Preparing video");
+    nodes.analysisMessage.textContent = "Preparing video";
     try {
       const processed = await transcodeVideo(file);
       setTranscodedVideo(processed.url, file.name);
       videoStatus = await waitForVideoReady();
-      const yoloLoaded = applyServerBallTrack(processed.ball_track, "YOLO auto");
-      setEngineStatus(yoloLoaded ? "Ball detector active" : "Ball detector pending");
       if (videoStatus.ok) {
         nodes.videoIssue.classList.add("hidden");
         nodes.videoIssue.textContent = "";
         state.videoIssue = null;
       }
+      setEngineStatus("Video ready / ball detecting");
+      detectServerBallTrack(processed.url)
+        .then((ballTrack) => {
+          const yoloLoaded = applyServerBallTrack(ballTrack, "YOLO auto");
+          setEngineStatus(yoloLoaded ? "Ball detector active" : "Ball detector pending");
+        })
+        .catch((error) => {
+          window.__arcaiDebug = {
+            ...(window.__arcaiDebug || {}),
+            ballTrackError: `${error.name || "Error"}: ${error.message || error}`
+          };
+          state.ballStatus = "server_yolo_failed";
+          state.importedBallSource = error.message || "YOLO auto failed";
+          setEngineStatus("Ball detector pending");
+          renderCalibrationGuide();
+        });
     } catch (error) {
       window.__arcaiDebug = {
         ...(window.__arcaiDebug || {}),
