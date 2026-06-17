@@ -67,7 +67,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-26";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-28";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -489,10 +489,14 @@ function clamp(value, min, max) {
 
 const uiCopyOverrides = {
   en: {
+    setBall: "Manual test",
+    loadYoloCsv: "Load YOLO CSV",
     tapBallBody:
       "Pause on a frame where the ball is clearly visible, ideally just after release and before the apex. Avoid the bottom control area."
   },
   ja: {
+    setBall: "手動補助 試験",
+    loadYoloCsv: "YOLO CSV読込",
     tapBallBody:
       "ボールがはっきり見えるコマでタップしてください。推奨はリリース直後から最高点手前です。画面下の操作バー付近は避けてください。"
   }
@@ -533,20 +537,20 @@ function renderCalibrationGuide() {
   if (!nodes.calibrationGuide) return;
   const hasVideo = decodedVideoIsUsable();
   const rimDone = Boolean(state.rim?.center && state.rim?.radiusX);
-  const ballDone = state.importedBallTrail.length >= 3 || state.ballTrail.length >= 1;
   const yoloDone = state.importedBallTrail.length >= 3;
+  const manualDone = state.ballTrail.length >= 1;
   const ja = state.language === "ja";
   const copy = ja
     ? {
         title: "次の作業",
         video: "動画読込",
         rim: "リング設定",
-        ball: "ボール補助",
-        yolo: "YOLO CSV",
+        ball: "手動補助 試験",
+        yolo: "YOLO CSV読込",
         nextVideo: "まず動画が表示されるまで待ってください。",
         nextRim: "次はリング設定です。リング中心をタップし、その後リング端をタップしてください。",
-        nextBall: "次はボール補助です。ボールがはっきり見える瞬間で1回タップしてください。",
-        ready: "ここまでで手動補助は完了です。ArcAI Viewで軌跡と数値を確認してください。",
+        nextYolo: "CSVはGoogle Colabで作成します。Colabでarcai_yolo_ball_track.csvをダウンロードしてから、YOLO CSV読込で選んでください。",
+        ready: "手動補助は試験機能です。数値に使うボール軌道はYOLO CSVを優先してください。",
         readyYolo: "YOLO CSVを読み込み済みです。ArcAI Viewで軌跡と数値を確認してください。",
         optional: "任意"
       }
@@ -554,12 +558,12 @@ function renderCalibrationGuide() {
         title: "Next step",
         video: "Video",
         rim: "Rim",
-        ball: "Ball assist",
-        yolo: "YOLO CSV",
+        ball: "Manual assist test",
+        yolo: "Load YOLO CSV",
         nextVideo: "Wait until the uploaded video is visible.",
         nextRim: "Set the rim: tap the rim center, then tap the rim edge.",
-        nextBall: "Use Ball assist: tap the ball once on a clear frame.",
-        ready: "Manual setup is complete. Review the trail and values in ArcAI View.",
+        nextYolo: "Create arcai_yolo_ball_track.csv in Google Colab, download it, then choose it with Load YOLO CSV.",
+        ready: "Manual assist is experimental. Use YOLO CSV as the primary ball track for metrics.",
         readyYolo: "YOLO CSV is loaded. Review the trail and values in ArcAI View.",
         optional: "Optional"
       };
@@ -568,16 +572,16 @@ function renderCalibrationGuide() {
     ? copy.nextVideo
     : !rimDone
       ? copy.nextRim
-      : !ballDone
-        ? copy.nextBall
+      : !yoloDone
+        ? copy.nextYolo
         : yoloDone
           ? copy.readyYolo
           : copy.ready;
   const steps = [
     { label: copy.video, done: hasVideo, current: !hasVideo },
     { label: copy.rim, done: rimDone, current: hasVideo && !rimDone },
-    { label: copy.ball, done: ballDone, current: hasVideo && rimDone && !ballDone },
-    { label: `${copy.yolo} ${copy.optional}`, done: yoloDone, current: false }
+    { label: copy.yolo, done: yoloDone, current: hasVideo && rimDone && !yoloDone },
+    { label: `${copy.ball} ${copy.optional}`, done: manualDone, current: false }
   ];
 
   nodes.calibrationGuide.innerHTML = `
@@ -1943,7 +1947,12 @@ function importYoloCsv(text, fileName = "YOLO CSV") {
   const validRows = rows.filter((row) => {
     const x = row.x <= 1 ? row.x * videoWidth : row.x;
     const y = row.y <= 1 ? row.y * videoHeight : row.y;
-    return x >= 0 && x <= videoWidth * 1.05 && y >= 0 && y <= videoHeight * 1.05;
+    const boxWidth = row.width <= 1 ? row.width * videoWidth : row.width;
+    const boxHeight = row.height <= 1 ? row.height * videoHeight : row.height;
+    const minBallBox = clamp(Math.min(videoWidth, videoHeight) * 0.018, 14, 24);
+    const hasBox = Number.isFinite(boxWidth) && Number.isFinite(boxHeight) && boxWidth > 0 && boxHeight > 0;
+    const boxLooksUsable = !hasBox || Math.min(boxWidth, boxHeight) >= minBallBox;
+    return x >= 0 && x <= videoWidth * 1.05 && y >= 0 && y <= videoHeight * 1.05 && boxLooksUsable;
   });
   const bestByFrame = new Map();
   for (const row of validRows) {
@@ -2002,11 +2011,35 @@ function cleanBallTrail(raw) {
     const current = raw[index];
     const gap = Math.max(0.016, current.time - previous.time);
     const jump = distance(current.normalized, previous.normalized);
-    const allowedJump = current.imported || previous.imported ? 0.28 : 0.16;
-    if (gap < 0.45 && jump > allowedJump) continue;
+    const imported = current.imported || previous.imported;
+    const allowedJump = imported ? 0.24 : 0.16;
+    const allowedGap = imported ? 0.42 : 0.45;
+    if (jump > allowedJump) continue;
+    if (gap > allowedGap && jump > allowedJump * 0.45) continue;
     cleaned.push(current);
   }
   return cleaned;
+}
+
+function splitBallTrailSegments(trail) {
+  const segments = [];
+  let segment = [];
+  for (const item of trail) {
+    const previous = segment[segment.length - 1];
+    if (previous) {
+      const gap = Math.max(0, item.time - previous.time);
+      const jump = distance(item.normalized, previous.normalized);
+      const imported = item.imported || previous.imported;
+      const allowedJump = imported ? 0.24 : 0.16;
+      if (jump > allowedJump || (gap > 0.42 && jump > allowedJump * 0.45)) {
+        if (segment.length >= 2) segments.push(segment);
+        segment = [];
+      }
+    }
+    segment.push(item);
+  }
+  if (segment.length >= 2) segments.push(segment);
+  return segments;
 }
 
 function stableBallTrail() {
@@ -2387,28 +2420,34 @@ function drawVirtualRimScene(ctx, rect, scale) {
 }
 
 function drawBallTrail(ctx, rect, scale) {
-  const visibleTrail = stableBallTrail();
-  if (visibleTrail.length < 3) return;
+  const visibleTrail = state.importedBallTrail.length >= 3
+    ? importedBallTrailPoints()
+    : stableBallTrail();
+  const segments = splitBallTrailSegments(visibleTrail);
+  if (!segments.length) return;
   ctx.save();
-  ctx.beginPath();
-  const points = visibleTrail.map((item) => mapNormalizedPoint(item.normalized, rect));
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const current = points[index];
-    const next = points[index + 1];
-    const mid = point((current.x + next.x) / 2, (current.y + next.y) / 2);
-    ctx.quadraticCurveTo(current.x, current.y, mid.x, mid.y);
-  }
-  const lastPoint = points[points.length - 1];
-  ctx.lineTo(lastPoint.x, lastPoint.y);
   ctx.strokeStyle = "rgba(255, 196, 0, .88)";
   ctx.lineWidth = 1.7 * scale;
   ctx.shadowColor = "rgba(255, 196, 0, .65)";
   ctx.shadowBlur = 4 * scale;
-  ctx.stroke();
-  visibleTrail.slice(-14).forEach((item, index) => {
+  for (const segment of segments) {
+    const points = segment.map((item) => mapNormalizedPoint(item.normalized, rect));
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const current = points[index];
+      const next = points[index + 1];
+      const mid = point((current.x + next.x) / 2, (current.y + next.y) / 2);
+      ctx.quadraticCurveTo(current.x, current.y, mid.x, mid.y);
+    }
+    const lastPoint = points[points.length - 1];
+    ctx.lineTo(lastPoint.x, lastPoint.y);
+    ctx.stroke();
+  }
+  const dots = segments.flat().slice(-18);
+  dots.forEach((item, index) => {
     const p = mapNormalizedPoint(item.normalized, rect);
-    const alpha = 0.22 + (index / 14) * 0.58;
+    const alpha = 0.22 + (index / Math.max(1, dots.length)) * 0.58;
     dot(ctx, p, clamp((item.radius || 3.5) * 0.78, 2, 5.8) * scale, `rgba(255, 196, 0, ${alpha})`, "rgba(0,0,0,.3)");
   });
   ctx.restore();

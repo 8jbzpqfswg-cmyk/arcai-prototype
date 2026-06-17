@@ -39,6 +39,7 @@ Ground reaction force values are pose-timing proxies, not measured force. They s
 - Black-background reconstruction canvas under the source video with player landmarks, manual rim calibration, virtual board/support/court, and vGRF proxy vectors.
 - Full Space, Body Zoom, and Compare views.
 - Motion-based experimental ball candidate tracking. Ball-flight metrics stay pending unless the tracked trajectory passes quality checks.
+- Primary ball tracking path: generate `arcai_yolo_ball_track.csv` in Google Colab, then load it with `YOLO CSV` in ArcAI. The in-browser manual ball assist is experimental and should not be treated as the primary source for metrics.
 - YOLO CSV import for ball tracks generated outside the browser, such as Colab experiments. Imported tracks are still treated as detection data, not a validated biomechanical measurement.
 - Metric tabs for Ball, Body, Chain, and Force.
 - ArcAI-specific prototype metrics: kinetic-chain score, hand-shot risk, and GRF-release coupling proxy.

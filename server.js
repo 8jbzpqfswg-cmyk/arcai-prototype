@@ -274,10 +274,11 @@ const server = http.createServer(async (request, response) => {
 
   const extension = path.extname(filePath);
   const stat = fs.statSync(filePath);
+  const noStoreExtensions = new Set([".html", ".js", ".css", ".webmanifest"]);
   const headers = {
     "Content-Type": contentTypes[extension] || "application/octet-stream",
     "Access-Control-Allow-Origin": "*",
-    "Cache-Control": extension === ".html" ? "no-store" : "public, max-age=3600"
+    "Cache-Control": noStoreExtensions.has(extension) ? "no-store" : "public, max-age=3600"
   };
 
   if (extension === ".mp4") {
