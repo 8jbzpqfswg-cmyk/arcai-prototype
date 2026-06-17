@@ -9,6 +9,9 @@ const ROOT = __dirname;
 const TRANSCODE_DIR = path.join(ROOT, "transcoded");
 const LOCAL_FFMPEG_PATH = path.join(ROOT, "bin", "ffmpeg.exe");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(LOCAL_FFMPEG_PATH) ? LOCAL_FFMPEG_PATH : "ffmpeg");
+const PYTHON_PATH = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
+const YOLO_SCRIPT = path.join(ROOT, "scripts", "arcai_yolo_ball_track.py");
+const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || "yolov8x.pt";
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -155,6 +158,56 @@ function runFfmpeg(inputPath, outputPath) {
   });
 }
 
+function runYoloBallTrack(videoPath) {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(YOLO_SCRIPT)) {
+      resolve({ ok: false, error: "YOLO script is missing" });
+      return;
+    }
+    const args = [YOLO_SCRIPT, videoPath, "--model", YOLO_MODEL];
+    const child = spawn(PYTHON_PATH, args, { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve({ ok: false, error: "YOLO ball detection timed out" });
+    }, 180_000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 4_000_000) stdout = stdout.slice(-4_000_000);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 16_000) stderr = stderr.slice(-16_000);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: error.message });
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse();
+      for (const line of lines) {
+        if (!line.startsWith("{") || !line.endsWith("}")) continue;
+        try {
+          const parsed = JSON.parse(line);
+          if (!parsed.ok && stderr) parsed.stderr = stderr;
+          resolve(parsed);
+          return;
+        } catch {
+          // Keep looking for a valid JSON line.
+        }
+      }
+      resolve({
+        ok: false,
+        error: "YOLO did not return JSON",
+        stderr
+      });
+    });
+  });
+}
+
 function bounded(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -224,12 +277,14 @@ async function handleApi(request, response, pathname) {
       const outputPath = path.join(TRANSCODE_DIR, `${id}.mp4`);
       fs.writeFileSync(inputPath, file.buffer);
       await runFfmpeg(inputPath, outputPath);
+      const ballTrack = await runYoloBallTrack(outputPath);
       return sendJson(response, 200, {
         ok: true,
         source: file.filename,
         url: `/transcoded/${id}.mp4`,
         bytes: fs.statSync(outputPath).size,
-        codec: "h264/aac"
+        codec: "h264/aac",
+        ball_track: ballTrack
       });
     } catch (error) {
       return sendJson(response, 500, {

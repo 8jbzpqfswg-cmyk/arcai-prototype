@@ -67,7 +67,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-28";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-29";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -600,6 +600,69 @@ function renderCalibrationGuide() {
   `;
 }
 
+renderCalibrationGuide = function renderCalibrationGuide() {
+  if (!nodes.calibrationGuide) return;
+  const hasVideo = decodedVideoIsUsable();
+  const rimDone = Boolean(state.rim?.center && state.rim?.radiusX);
+  const autoBallDone = state.importedBallTrail.length >= 3;
+  const manualDone = state.ballTrail.length >= 1;
+  const ja = state.language === "ja";
+  const copy = ja
+    ? {
+        title: "次の作業",
+        video: "動画読込",
+        rim: "リング設定",
+        autoBall: "自動ボール検出",
+        manualBall: "手動補助",
+        nextVideo: "まず動画が表示されるまで待ってください。",
+        nextRim: "次はリング設定です。リング中心をタップし、その後リング端をタップしてください。",
+        nextAutoBall: "ボールはアップロード時に自動検出します。検出できない場合のみ手動補助を使います。",
+        readyAutoBall: "自動ボール検出を読み込み済みです。ArcAI Viewで軌跡と数値を確認してください。",
+        optional: "任意"
+      }
+    : {
+        title: "Next step",
+        video: "Video",
+        rim: "Rim",
+        autoBall: "Auto ball detection",
+        manualBall: "Manual assist",
+        nextVideo: "Wait until the uploaded video is visible.",
+        nextRim: "Set the rim: tap the rim center, then tap the rim edge.",
+        nextAutoBall: "ArcAI detects the ball automatically during upload. Use manual assist only if detection fails.",
+        readyAutoBall: "Auto ball detection is loaded. Review the trail and values in ArcAI View.",
+        optional: "Optional"
+      };
+
+  const nextText = !hasVideo
+    ? copy.nextVideo
+    : !rimDone
+      ? copy.nextRim
+      : !autoBallDone
+        ? copy.nextAutoBall
+        : copy.readyAutoBall;
+  const steps = [
+    { label: copy.video, done: hasVideo, current: !hasVideo },
+    { label: copy.rim, done: rimDone, current: hasVideo && !rimDone },
+    { label: copy.autoBall, done: autoBallDone, current: hasVideo && rimDone && !autoBallDone },
+    { label: `${copy.manualBall} ${copy.optional}`, done: manualDone, current: false }
+  ];
+
+  nodes.calibrationGuide.innerHTML = `
+    <div class="guide-head">
+      <strong>${copy.title}</strong>
+      <span>${nextText}</span>
+    </div>
+    <div class="guide-steps">
+      ${steps
+        .map(
+          (step) =>
+            `<span class="${step.done ? "done" : ""} ${step.current ? "current" : ""}">${step.done ? "✓ " : ""}${step.label}</span>`
+        )
+        .join("")}
+    </div>
+  `;
+};
+
 function getDisplayMetrics(analysis = state.analysis || baseAnalysis) {
   return {
     ...(analysis.metrics || {}),
@@ -968,21 +1031,32 @@ async function runAnalysis(file) {
   const codec = state.fileCodec;
   const likelyHevc = codec?.hvc1 || codec?.hev1;
 
-  if (!videoStatus.ok && file && likelyHevc) {
-    showVideoIssue("Converting HEVC/MOV to MP4", "ArcAI is creating a browser-readable H.264 file locally.");
-    setEngineStatus("Transcoding video");
-    nodes.analysisMessage.textContent = "Converting MOV to MP4";
+  if (file) {
+    showVideoIssue("Preparing video", "ArcAI is converting the video and detecting the ball automatically.");
+    setEngineStatus("Detecting ball");
+    nodes.analysisMessage.textContent = "Detecting ball with YOLO";
     try {
-      const transcoded = await transcodeVideo(file);
-      setTranscodedVideo(transcoded.url, file.name);
+      const processed = await transcodeVideo(file);
+      setTranscodedVideo(processed.url, file.name);
       videoStatus = await waitForVideoReady();
+      const yoloLoaded = applyServerBallTrack(processed.ball_track, "YOLO auto");
+      setEngineStatus(yoloLoaded ? "Ball detector active" : "Ball detector pending");
+      if (videoStatus.ok) {
+        nodes.videoIssue.classList.add("hidden");
+        nodes.videoIssue.textContent = "";
+        state.videoIssue = null;
+      }
     } catch (error) {
       window.__arcaiDebug = {
         ...(window.__arcaiDebug || {}),
-        transcodeError: `${error.name || "Error"}: ${error.message || error}`
+        videoProcessError: `${error.name || "Error"}: ${error.message || error}`
       };
-      showVideoIssue("Transcode failed", error.message || "FFmpeg could not convert this video.");
-      setEngineStatus("Transcode failed");
+      if (!videoStatus.ok || likelyHevc) {
+        showVideoIssue("Video processing failed", error.message || "ArcAI could not prepare this video.");
+        setEngineStatus("Video processing failed");
+      } else {
+        setEngineStatus("Ball detector unavailable");
+      }
     }
   }
 
@@ -1940,15 +2014,37 @@ function parseYoloCsv(text) {
   return rows;
 }
 
-function importYoloCsv(text, fileName = "YOLO CSV") {
-  const rows = parseYoloCsv(text);
+function coerceBallTrackRow(row) {
+  const frame = Number(row.frame ?? row.frame_index ?? row.frame_id ?? row.f);
+  const time = Number(row.time ?? row.time_s ?? row.seconds ?? row.t);
+  const x = Number(row.x ?? row.x_center ?? row.center_x ?? row.cx);
+  const y = Number(row.y ?? row.y_center ?? row.center_y ?? row.cy);
+  const width = Number(row.width ?? row.w ?? row.box_width);
+  const height = Number(row.height ?? row.h ?? row.box_height);
+  let confidence = Number(row.confidence ?? row.conf ?? row.score ?? row.probability);
+  if (Number.isFinite(confidence) && confidence > 1) confidence /= 100;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return {
+    frame: Number.isFinite(frame) ? frame : null,
+    time: Number.isFinite(time) ? time : null,
+    x,
+    y,
+    width: Number.isFinite(width) ? width : null,
+    height: Number.isFinite(height) ? height : null,
+    confidence: clamp(Number.isFinite(confidence) ? confidence : 0.5, 0, 1),
+    source: row.source || "server_yolo"
+  };
+}
+
+function setImportedBallRows(rows, sourceName = "YOLO") {
+  const normalizedRows = rows.map(coerceBallTrackRow).filter(Boolean);
   const videoWidth = nodes.sourceVideo.videoWidth || 1;
   const videoHeight = nodes.sourceVideo.videoHeight || 1;
-  const validRows = rows.filter((row) => {
+  const validRows = normalizedRows.filter((row) => {
     const x = row.x <= 1 ? row.x * videoWidth : row.x;
     const y = row.y <= 1 ? row.y * videoHeight : row.y;
-    const boxWidth = row.width <= 1 ? row.width * videoWidth : row.width;
-    const boxHeight = row.height <= 1 ? row.height * videoHeight : row.height;
+    const boxWidth = row.width && row.width <= 1 ? row.width * videoWidth : row.width;
+    const boxHeight = row.height && row.height <= 1 ? row.height * videoHeight : row.height;
     const minBallBox = clamp(Math.min(videoWidth, videoHeight) * 0.018, 14, 24);
     const hasBox = Number.isFinite(boxWidth) && Number.isFinite(boxHeight) && boxWidth > 0 && boxHeight > 0;
     const boxLooksUsable = !hasBox || Math.min(boxWidth, boxHeight) >= minBallBox;
@@ -1965,12 +2061,33 @@ function importYoloCsv(text, fileName = "YOLO CSV") {
     const bKey = Number.isFinite(b.frame) ? b.frame : b.time ?? 0;
     return aKey - bKey;
   });
-  state.importedBallSource = fileName;
+  state.importedBallSource = sourceName;
   state.ballStatus = state.importedBallTrail.length >= 3 ? "yolo_csv_loaded" : "pending";
   computeBallMetrics();
   renderMetricCard();
   renderCalibrationGuide();
   restartCanvas();
+}
+
+function importYoloCsv(text, fileName = "YOLO CSV") {
+  setImportedBallRows(parseYoloCsv(text), fileName);
+}
+
+function applyServerBallTrack(ballTrack, sourceName = "YOLO auto") {
+  const rows = Array.isArray(ballTrack?.rows) ? ballTrack.rows : [];
+  if (!ballTrack?.ok || rows.length < 3) {
+    state.ballStatus = "server_yolo_failed";
+    state.importedBallSource = ballTrack?.error || "YOLO auto failed";
+    renderCalibrationGuide();
+    restartCanvas();
+    return false;
+  }
+  setImportedBallRows(rows, sourceName);
+  state.ballStatus = state.importedBallTrail.length >= 3 ? "server_yolo_loaded" : "server_yolo_failed";
+  state.importedBallSource = `${sourceName}: ${state.importedBallTrail.length}/${ballTrack.track_points || rows.length}`;
+  renderCalibrationGuide();
+  restartCanvas();
+  return state.ballStatus === "server_yolo_loaded";
 }
 
 function importedBallTrailPoints() {
@@ -2693,7 +2810,7 @@ function drawCanvas() {
   const stableTrail = stableBallTrail();
   const ballLabel =
     state.importedBallTrail.length >= 3
-      ? `YOLO CSV ${stableTrail.length >= 5 ? "loaded" : "needs cleaned track"}`
+      ? `auto ball ${stableTrail.length >= 5 ? "locked" : "needs review"}`
       : stableTrail.length >= 5
         ? "ball trail locked"
         : state.ballTrail.length >= 3
