@@ -67,7 +67,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260616-arcai-25";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-26";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -838,7 +838,16 @@ async function transcodeVideo(file) {
     method: "POST",
     body: form
   });
-  const payload = await response.json();
+  const text = await response.text();
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(`Transcode API returned non-JSON response (HTTP ${response.status}).`);
+    }
+  }
+  if (!payload) throw new Error(`Transcode API returned an empty response (HTTP ${response.status}).`);
   if (!response.ok || !payload.ok) throw new Error(payload.message || "transcode failed");
   return payload;
 }
