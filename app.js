@@ -63,11 +63,12 @@ const state = {
   ballStatus: "pending",
   rim: null,
   rimPickMode: "idle",
+  lastPickAt: 0,
   videoIssue: null,
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-31";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-32";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -1385,8 +1386,12 @@ function videoDisplayRect(element = nodes.sourceVideo) {
 function videoPointFromPointer(event) {
   if (!decodedVideoIsUsable()) return null;
   const rect = videoDisplayRect();
-  const x = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-  const y = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+  const touch = event.changedTouches?.[0] || event.touches?.[0];
+  const clientX = touch?.clientX ?? event.clientX;
+  const clientY = touch?.clientY ?? event.clientY;
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+  const x = clamp((clientX - rect.left) / rect.width, 0, 1);
+  const y = clamp((clientY - rect.top) / rect.height, 0, 1);
   return { x, y };
 }
 
@@ -1446,6 +1451,9 @@ function startBallPicking() {
 
 function handleRimPick(event) {
   if (state.rimPickMode === "idle") return;
+  const now = performance.now();
+  if (now - state.lastPickAt < 220) return;
+  state.lastPickAt = now;
   const p = videoPointFromPointer(event);
   if (!p) return;
   event.preventDefault();
@@ -2923,6 +2931,8 @@ function bindEvents() {
   });
 
   nodes.rimPickLayer.addEventListener("pointerdown", handleRimPick);
+  nodes.rimPickLayer.addEventListener("click", handleRimPick);
+  nodes.rimPickLayer.addEventListener("touchend", handleRimPick, { passive: false });
   window.addEventListener("resize", restartCanvas);
 }
 

@@ -554,7 +554,7 @@ button {
 }
 
 .original-panel {
-  height: clamp(15.5rem, 38dvh, 22rem);
+  height: auto;
 }
 
 .reconstruction-panel {
@@ -723,8 +723,9 @@ button {
 }
 
 .original-panel .video-box {
-  height: calc(100% - 7.75rem);
-  min-height: 8.6rem;
+  height: auto;
+  min-height: clamp(14rem, 42dvh, 24rem);
+  aspect-ratio: 16 / 9;
 }
 
 .view-tabs {
@@ -831,6 +832,9 @@ button {
   color: #fff;
   text-align: center;
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .rim-pick-layer strong {
@@ -1033,7 +1037,11 @@ button {
   }
 
   .original-panel {
-    height: 15rem;
+    height: auto;
+  }
+
+  .original-panel .video-box {
+    min-height: 13.5rem;
   }
 
   .reconstruction-panel {

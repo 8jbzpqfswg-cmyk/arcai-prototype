@@ -1,4 +1,4 @@
-const CACHE_NAME = "arcai-prototype-v31";
+const CACHE_NAME = "arcai-prototype-v32";
 const APP_ASSETS = [
   "./",
   "./index.html",
