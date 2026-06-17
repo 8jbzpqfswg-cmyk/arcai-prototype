@@ -6,6 +6,7 @@ const nodes = {
   app: document.querySelector("#app"),
   splash: document.querySelector("#splash"),
   videoInput: document.querySelector("#videoInput"),
+  yoloCsvInput: document.querySelector("#yoloCsvInput"),
   progressBar: document.querySelector("#progressBar"),
   analysisMessage: document.querySelector("#analysisMessage"),
   sourceVideo: document.querySelector("#sourceVideo"),
@@ -13,6 +14,7 @@ const nodes = {
   videoIssue: document.querySelector("#videoIssue"),
   videoName: document.querySelector("#videoName"),
   rimPickLayer: document.querySelector("#rimPickLayer"),
+  calibrationGuide: document.querySelector("#calibrationGuide"),
   engineStatus: document.querySelector("#engineStatus"),
   overlayCanvas: document.querySelector("#overlayCanvas"),
   metricCard: document.querySelector("#metricCard")
@@ -52,7 +54,11 @@ const state = {
   lastBallCandidate: null,
   ballTemplate: null,
   ballTemplateMisses: 0,
+  ballManualIndex: 0,
+  ballManualLimit: 5,
   ballTrail: [],
+  importedBallTrail: [],
+  importedBallSource: "",
   lastBallTime: -1,
   ballStatus: "pending",
   rim: null,
@@ -61,7 +67,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260614-arcai-24";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260616-arcai-25";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -139,6 +145,7 @@ const uiCopy = {
   en: {
     homeSubtitle: "Analyze Your Shot",
     uploadVideo: "Upload Video",
+    loadYoloCsv: "YOLO CSV",
     demoAnalysis: "Demo Analysis",
     analyzingTitle: "Analyzing...",
     resultTitle: "Shot record",
@@ -193,6 +200,7 @@ const uiCopy = {
   ja: {
     homeSubtitle: "シュートを解析する",
     uploadVideo: "動画をアップロード",
+    loadYoloCsv: "YOLO CSV読込",
     demoAnalysis: "デモ解析",
     analyzingTitle: "Analyzing...",
     resultTitle: "シュート記録",
@@ -337,16 +345,16 @@ const tabContentJa = {
     note: "膝伸展ピークと手首上昇ピークのタイミングから推定します。ボールリリース時刻は追跡が安定した時だけ扱います。"
   },
   force: {
-    title: "仮想床反力",
+    title: "床反力proxy",
     labels: {
-      vgrf_proxy_peak_bw: "仮想床反力ピーク",
+      vgrf_proxy_peak_bw: "下肢伸展proxyピーク",
       grf_release_coupling_ms: "床反力と手首のずれ",
       landing_drift_pct: "接地位置のぶれ",
       shot_score: "Shot score"
     },
     discussion:
-      "Dipで生じる床反力推定と、手首上昇・リリースへ向かう動きのずれを観察します。",
-    note: "これはフォースプレート測定ではなく、姿勢推定から作るタイミング指標です。"
+      "姿勢推定から算出した下肢伸展proxyと、手首上昇へ向かう動きのずれを観察します。",
+    note: "これはフォースプレートの実測床反力ではありません。現段階では2D姿勢推定から作るproxyです。"
   }
 };
 
@@ -479,8 +487,19 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+const uiCopyOverrides = {
+  en: {
+    tapBallBody:
+      "Pause on a frame where the ball is clearly visible, ideally just after release and before the apex. Avoid the bottom control area."
+  },
+  ja: {
+    tapBallBody:
+      "ボールがはっきり見えるコマでタップしてください。推奨はリリース直後から最高点手前です。画面下の操作バー付近は避けてください。"
+  }
+};
+
 function t(key) {
-  return uiCopy[state.language]?.[key] ?? uiCopy.en[key] ?? key;
+  return uiCopyOverrides[state.language]?.[key] ?? uiCopy[state.language]?.[key] ?? uiCopy.en[key] ?? key;
 }
 
 function unitLabel(unit) {
@@ -508,6 +527,73 @@ function metricStatus(value, key) {
 
 function currentMessages() {
   return uiCopy[state.language]?.messages || uiCopy.en.messages;
+}
+
+function renderCalibrationGuide() {
+  if (!nodes.calibrationGuide) return;
+  const hasVideo = decodedVideoIsUsable();
+  const rimDone = Boolean(state.rim?.center && state.rim?.radiusX);
+  const ballDone = state.importedBallTrail.length >= 3 || state.ballTrail.length >= 1;
+  const yoloDone = state.importedBallTrail.length >= 3;
+  const ja = state.language === "ja";
+  const copy = ja
+    ? {
+        title: "次の作業",
+        video: "動画読込",
+        rim: "リング設定",
+        ball: "ボール補助",
+        yolo: "YOLO CSV",
+        nextVideo: "まず動画が表示されるまで待ってください。",
+        nextRim: "次はリング設定です。リング中心をタップし、その後リング端をタップしてください。",
+        nextBall: "次はボール補助です。ボールがはっきり見える瞬間で1回タップしてください。",
+        ready: "ここまでで手動補助は完了です。ArcAI Viewで軌跡と数値を確認してください。",
+        readyYolo: "YOLO CSVを読み込み済みです。ArcAI Viewで軌跡と数値を確認してください。",
+        optional: "任意"
+      }
+    : {
+        title: "Next step",
+        video: "Video",
+        rim: "Rim",
+        ball: "Ball assist",
+        yolo: "YOLO CSV",
+        nextVideo: "Wait until the uploaded video is visible.",
+        nextRim: "Set the rim: tap the rim center, then tap the rim edge.",
+        nextBall: "Use Ball assist: tap the ball once on a clear frame.",
+        ready: "Manual setup is complete. Review the trail and values in ArcAI View.",
+        readyYolo: "YOLO CSV is loaded. Review the trail and values in ArcAI View.",
+        optional: "Optional"
+      };
+
+  const nextText = !hasVideo
+    ? copy.nextVideo
+    : !rimDone
+      ? copy.nextRim
+      : !ballDone
+        ? copy.nextBall
+        : yoloDone
+          ? copy.readyYolo
+          : copy.ready;
+  const steps = [
+    { label: copy.video, done: hasVideo, current: !hasVideo },
+    { label: copy.rim, done: rimDone, current: hasVideo && !rimDone },
+    { label: copy.ball, done: ballDone, current: hasVideo && rimDone && !ballDone },
+    { label: `${copy.yolo} ${copy.optional}`, done: yoloDone, current: false }
+  ];
+
+  nodes.calibrationGuide.innerHTML = `
+    <div class="guide-head">
+      <strong>${copy.title}</strong>
+      <span>${nextText}</span>
+    </div>
+    <div class="guide-steps">
+      ${steps
+        .map(
+          (step) =>
+            `<span class="${step.done ? "done" : ""} ${step.current ? "current" : ""}">${step.done ? "✓ " : ""}${step.label}</span>`
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function getDisplayMetrics(analysis = state.analysis || baseAnalysis) {
@@ -552,6 +638,7 @@ function applyLanguage() {
   });
   if (state.screen === "analyzing") nodes.analysisMessage.textContent = currentMessages()[0];
   renderMetricCard();
+  renderCalibrationGuide();
 }
 
 function applyPlaybackRate() {
@@ -644,13 +731,17 @@ function setVideo(file) {
   state.lastBallCandidate = null;
   state.ballTemplate = null;
   state.ballTemplateMisses = 0;
+  state.ballManualIndex = 0;
   state.ballTrail = [];
+  state.importedBallTrail = [];
+  state.importedBallSource = "";
   state.lastBallTime = -1;
   state.ballStatus = "pending";
   state.rim = null;
   state.rimPickMode = "idle";
   state.videoIssue = null;
   nodes.rimPickLayer.classList.add("hidden");
+  setVideoPickingControls(false);
   nodes.videoIssue.classList.add("hidden");
   nodes.videoIssue.textContent = "";
   nodes.sourceVideo.loop = true;
@@ -669,12 +760,14 @@ function setVideo(file) {
   }
   nodes.sourceVideo.currentTime = 0;
   nodes.sourceVideo.play().catch(() => {});
+  renderCalibrationGuide();
   restartCanvas();
 }
 
 function setTranscodedVideo(url, originalName) {
   if (state.selectedUrl && state.selectedUrlIsObject) URL.revokeObjectURL(state.selectedUrl);
-  state.selectedUrl = new URL(url, window.location.href).href;
+  const baseUrl = window.location.protocol === "file:" ? "http://localhost:4173/" : window.location.href;
+  state.selectedUrl = new URL(url, baseUrl).href;
   state.selectedUrlIsObject = false;
   state.poseResult = null;
   state.lastPoseTime = -1;
@@ -688,10 +781,16 @@ function setTranscodedVideo(url, originalName) {
   state.lastBallCandidate = null;
   state.ballTemplate = null;
   state.ballTemplateMisses = 0;
+  state.ballManualIndex = 0;
   state.ballTrail = [];
+  state.importedBallTrail = [];
+  state.importedBallSource = "";
   state.lastBallTime = -1;
   state.ballStatus = "pending";
   state.videoIssue = null;
+  state.rimPickMode = "idle";
+  nodes.rimPickLayer.classList.add("hidden");
+  setVideoPickingControls(false);
   nodes.videoIssue.classList.add("hidden");
   nodes.videoIssue.textContent = "";
   nodes.sourceVideo.src = state.selectedUrl;
@@ -701,6 +800,7 @@ function setTranscodedVideo(url, originalName) {
   nodes.videoName.textContent = `${originalName} -> MP4`;
   nodes.sourceVideo.currentTime = 0;
   nodes.sourceVideo.play().catch(() => {});
+  renderCalibrationGuide();
   restartCanvas();
 }
 
@@ -1182,6 +1282,11 @@ function setRimPickText(title, body) {
   nodes.rimPickLayer.innerHTML = `<strong>${title}</strong><span>${body}</span>`;
 }
 
+function setVideoPickingControls(active) {
+  nodes.sourceVideo.controls = !active;
+  nodes.sourceVideo.classList.toggle("picking", active);
+}
+
 function startRimPicking() {
   if (!decodedVideoIsUsable()) {
     nodes.rimPickLayer.classList.remove("hidden");
@@ -1193,8 +1298,10 @@ function startRimPicking() {
   }
   state.rimPickMode = "center";
   nodes.sourceVideo.pause();
+  setVideoPickingControls(true);
   nodes.rimPickLayer.classList.remove("hidden");
   setRimPickText(t("tapRimCenterTitle"), t("tapRimCenterBody"));
+  renderCalibrationGuide();
 }
 
 function startBallPicking() {
@@ -1208,8 +1315,10 @@ function startBallPicking() {
   }
   state.rimPickMode = "ball";
   nodes.sourceVideo.pause();
+  setVideoPickingControls(true);
   nodes.rimPickLayer.classList.remove("hidden");
   setRimPickText(t("tapBallTitle"), t("tapBallBody"));
+  renderCalibrationGuide();
 }
 
 function handleRimPick(event) {
@@ -1226,6 +1335,7 @@ function handleRimPick(event) {
     };
     state.rimPickMode = "edge";
     setRimPickText(t("tapRimEdgeTitle"), t("tapRimEdgeBody"));
+    renderCalibrationGuide();
     return;
   }
 
@@ -1243,9 +1353,13 @@ function handleRimPick(event) {
     });
     state.rimPickMode = "idle";
     setRimPickText(t("ballSeededTitle"), t("ballSeededBody"));
-    setTimeout(() => nodes.rimPickLayer.classList.add("hidden"), 520);
+    setTimeout(() => {
+      nodes.rimPickLayer.classList.add("hidden");
+      setVideoPickingControls(false);
+    }, 520);
     nodes.sourceVideo.play().catch(() => {});
     renderMetricCard();
+    renderCalibrationGuide();
     restartCanvas();
     return;
   }
@@ -1258,9 +1372,11 @@ function handleRimPick(event) {
   state.rim.radiusX = clamp(radiusPx / sourceWidth, 0.006, 0.08);
   state.rimPickMode = "idle";
   nodes.rimPickLayer.classList.add("hidden");
+  setVideoPickingControls(false);
   nodes.sourceVideo.play().catch(() => {});
   computeBallMetrics();
   renderMetricCard();
+  renderCalibrationGuide();
   restartCanvas();
 }
 
@@ -1710,7 +1826,6 @@ function detectBallByTemplate(rect, frame) {
   };
 }
 
-
 function pushBallCandidate(candidate) {
   if (!candidate) return;
   const video = nodes.sourceVideo;
@@ -1734,8 +1849,143 @@ function pushBallCandidate(candidate) {
   computeBallMetrics();
 }
 
-function stableBallTrail() {
-  const raw = state.ballTrail.filter((item) => item.seeded || item.confidence >= (item.source === "template" ? 0.52 : 0.5));
+function splitCsvLine(line) {
+  const cells = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      cell += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+function normalizeCsvHeader(value) {
+  return String(value || "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function numberFromCsvRow(row, names) {
+  for (const name of names) {
+    const value = row[name];
+    if (value === undefined || value === "") continue;
+    const number = Number(String(value).replace("%", ""));
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function parseYoloCsv(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = splitCsvLine(lines[0]).map(normalizeCsvHeader);
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    const values = splitCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index];
+    });
+    const frame = numberFromCsvRow(row, ["frame", "frame_index", "frame_id", "f"]);
+    const time = numberFromCsvRow(row, ["time", "time_s", "seconds", "t"]);
+    const x = numberFromCsvRow(row, ["x_center", "center_x", "cx", "x"]);
+    const y = numberFromCsvRow(row, ["y_center", "center_y", "cy", "y"]);
+    const width = numberFromCsvRow(row, ["width", "w", "box_width"]);
+    const height = numberFromCsvRow(row, ["height", "h", "box_height"]);
+    let confidence = numberFromCsvRow(row, ["confidence", "conf", "score", "probability"]);
+    if (confidence !== null && confidence > 1) confidence /= 100;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    rows.push({
+      frame,
+      time,
+      x,
+      y,
+      width,
+      height,
+      confidence: clamp(confidence ?? 0.5, 0, 1),
+      source: "yolo_csv"
+    });
+  }
+  return rows;
+}
+
+function importYoloCsv(text, fileName = "YOLO CSV") {
+  const rows = parseYoloCsv(text);
+  const videoWidth = nodes.sourceVideo.videoWidth || 1;
+  const videoHeight = nodes.sourceVideo.videoHeight || 1;
+  const validRows = rows.filter((row) => {
+    const x = row.x <= 1 ? row.x * videoWidth : row.x;
+    const y = row.y <= 1 ? row.y * videoHeight : row.y;
+    return x >= 0 && x <= videoWidth * 1.05 && y >= 0 && y <= videoHeight * 1.05;
+  });
+  const bestByFrame = new Map();
+  for (const row of validRows) {
+    const key = Number.isFinite(row.frame) ? `f:${row.frame}` : `t:${roundMetric(row.time ?? 0, 3)}`;
+    const current = bestByFrame.get(key);
+    if (!current || row.confidence > current.confidence) bestByFrame.set(key, row);
+  }
+  state.importedBallTrail = [...bestByFrame.values()].sort((a, b) => {
+    const aKey = Number.isFinite(a.frame) ? a.frame : a.time ?? 0;
+    const bKey = Number.isFinite(b.frame) ? b.frame : b.time ?? 0;
+    return aKey - bKey;
+  });
+  state.importedBallSource = fileName;
+  state.ballStatus = state.importedBallTrail.length >= 3 ? "yolo_csv_loaded" : "pending";
+  computeBallMetrics();
+  renderMetricCard();
+  renderCalibrationGuide();
+  restartCanvas();
+}
+
+function importedBallTrailPoints() {
+  if (state.importedBallTrail.length < 3 || !decodedVideoIsUsable()) return [];
+  const videoWidth = nodes.sourceVideo.videoWidth || 1;
+  const videoHeight = nodes.sourceVideo.videoHeight || 1;
+  const duration = Number.isFinite(nodes.sourceVideo.duration) ? nodes.sourceVideo.duration : null;
+  const frames = state.importedBallTrail.map((item) => item.frame).filter(Number.isFinite);
+  const maxFrame = frames.length ? Math.max(...frames) : 0;
+  const frameSpan = Math.max(1, maxFrame);
+  return state.importedBallTrail
+    .map((item) => {
+      const x = item.x <= 1 ? item.x : item.x / videoWidth;
+      const y = item.y <= 1 ? item.y : item.y / videoHeight;
+      const time = Number.isFinite(item.time)
+        ? item.time
+        : duration
+          ? (item.frame ?? 0) / frameSpan * duration
+          : 0;
+      const radiusPx = Math.max(item.width || 0, item.height || 0) / 2;
+      return {
+        normalized: point(clamp(x, 0, 1), clamp(y, 0, 1)),
+        time,
+        radius: radiusPx > 0 ? clamp(radiusPx, 2.5, 14) : 4.5,
+        confidence: item.confidence,
+        source: "yolo_csv",
+        imported: true
+      };
+    })
+    .filter((item) => Number.isFinite(item.time));
+}
+
+function cleanBallTrail(raw) {
   if (raw.length < 5) return [];
   const cleaned = [raw[0]];
   for (let index = 1; index < raw.length; index += 1) {
@@ -1743,9 +1993,19 @@ function stableBallTrail() {
     const current = raw[index];
     const gap = Math.max(0.016, current.time - previous.time);
     const jump = distance(current.normalized, previous.normalized);
-    if (gap < 0.45 && jump > 0.16) continue;
+    const allowedJump = current.imported || previous.imported ? 0.28 : 0.16;
+    if (gap < 0.45 && jump > allowedJump) continue;
     cleaned.push(current);
   }
+  return cleaned;
+}
+
+function stableBallTrail() {
+  const imported = cleanBallTrail(importedBallTrailPoints());
+  if (imported.length >= 5) return imported;
+  const raw = state.ballTrail.filter((item) => item.seeded || item.confidence >= (item.source === "template" ? 0.52 : 0.5));
+  if (raw.length < 5) return [];
+  const cleaned = cleanBallTrail(raw);
   if (cleaned.length < 5) return [];
 
   const sourceWidth = nodes.sourceVideo.videoWidth || 1;
@@ -1773,7 +2033,6 @@ function stableBallTrail() {
 
 function computeBallMetrics() {
   if (!state.analysis) return;
-  const rawTrail = state.ballTrail.filter((item) => item.confidence >= 0.35 || item.seeded);
   const trail = stableBallTrail();
   const metersPerPixel = rimMetersPerPixel();
   if (!state.rim?.center || !metersPerPixel || trail.length < 5) {
@@ -1868,32 +2127,17 @@ function detectBallCandidate(rect, landmarks) {
   if (!decodedVideoIsUsable()) return null;
   if (Math.abs(video.currentTime - state.lastMotionTime) < 0.075) return state.lastBallCandidate;
 
-  const templateFrame = readMotionFrame();
-  const templateCandidate = detectBallByTemplate(rect, templateFrame);
+  const frame = readMotionFrame();
+  if (!frame) return null;
+  const { data, luma, probeWidth, probeHeight } = frame;
+  const moving = new Uint8Array(probeWidth * probeHeight);
+  const templateCandidate = detectBallByTemplate(rect, frame);
   if (templateCandidate) {
-    state.previousLuma = templateFrame.luma;
+    state.previousLuma = luma;
     state.lastMotionTime = video.currentTime;
     state.lastBallCandidate = templateCandidate;
     pushBallCandidate(templateCandidate);
     return templateCandidate;
-  }
-
-  const probe = state.motionCanvas;
-  const probeWidth = 192;
-  const probeHeight = Math.max(80, Math.round((video.videoHeight / video.videoWidth) * probeWidth));
-  if (probe.width !== probeWidth || probe.height !== probeHeight) {
-    probe.width = probeWidth;
-    probe.height = probeHeight;
-    state.previousLuma = null;
-  }
-  const ctx = probe.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(video, 0, 0, probeWidth, probeHeight);
-  const data = ctx.getImageData(0, 0, probeWidth, probeHeight).data;
-  const luma = new Uint8Array(probeWidth * probeHeight);
-  const moving = new Uint8Array(probeWidth * probeHeight);
-  for (let index = 0; index < luma.length; index += 1) {
-    const offset = index * 4;
-    luma[index] = Math.round(data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114);
   }
 
   if (!state.previousLuma) {
@@ -2015,14 +2259,68 @@ function courtFloorY(rect) {
   return rect.y + rect.height * 0.86;
 }
 
-function drawPerspectiveCourt(ctx, rect, floorY, scale) {
+function estimatedGroundNorm() {
+  const ground = percentile(state.poseSamples.map((sample) => sample.floorY), 0.9);
+  return Number.isFinite(ground) ? ground : null;
+}
+
+function forceAnchorSample(sample) {
+  const ground = estimatedGroundNorm() ?? sample.floorY;
+  const threshold = Math.max(0.012, (sample.bodyHeight || 0.18) * 0.075);
+  for (let index = state.poseSamples.length - 1; index >= 0; index -= 1) {
+    const candidate = state.poseSamples[index];
+    if (!Number.isFinite(candidate.footX) || !Number.isFinite(candidate.floorY)) continue;
+    if (Math.max(0, ground - candidate.floorY) <= threshold) return candidate;
+  }
+  return sample;
+}
+
+function lowerImpulseProxyBetween(previous, sample) {
+  if (!previous || !sample) return null;
+  const dt = sample.time - previous.time;
+  if (dt <= 0.005 || dt > 0.25) return null;
+  const bodyHeight = Math.max(0.18, (sample.bodyHeight + previous.bodyHeight) / 2);
+  const kneeExtension = (sample.kneeAngle - previous.kneeAngle) / dt;
+  const hipRise = ((previous.hipY - sample.hipY) / bodyHeight / dt) * 100;
+  return Math.max(0, kneeExtension) + Math.max(0, hipRise) * 3;
+}
+
+function currentLowerImpulseProxy(sample) {
+  const samples = state.poseSamples;
+  const previous = samples[samples.length - 2];
+  return lowerImpulseProxyBetween(previous, sample);
+}
+
+function lowerImpulseProxyPeak() {
+  let peak = 0;
+  for (let index = 1; index < state.poseSamples.length; index += 1) {
+    const value = lowerImpulseProxyBetween(state.poseSamples[index - 1], state.poseSamples[index]);
+    if (Number.isFinite(value)) peak = Math.max(peak, value);
+  }
+  return peak > 0 ? peak : null;
+}
+
+function drawCourtGuide(ctx, rect, floorY, scale) {
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,.2)";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(255, 255, 255, .2)";
   ctx.lineWidth = 1.25 * scale;
   ctx.beginPath();
   ctx.moveTo(rect.x + rect.width * 0.04, floorY);
   ctx.lineTo(rect.x + rect.width * 0.96, floorY);
   ctx.stroke();
+
+  ctx.strokeStyle = "rgba(255, 255, 255, .1)";
+  ctx.lineWidth = 0.8 * scale;
+  [0.25, 0.5, 0.75].forEach((ratio) => {
+    const x = rect.x + rect.width * ratio;
+    ctx.beginPath();
+    ctx.moveTo(x, floorY - 5 * scale);
+    ctx.lineTo(x, floorY + 5 * scale);
+    ctx.stroke();
+  });
+
   ctx.fillStyle = "rgba(255,255,255,.5)";
   ctx.font = "700 9px Inter, sans-serif";
   ctx.fillText("floor guide / court lines uncalibrated", rect.x + 12, Math.max(rect.y + 20, floorY - 12));
@@ -2034,15 +2332,48 @@ function drawVirtualRimScene(ctx, rect, scale) {
   const center = mapNormalizedPoint(state.rim.center, rect);
   const radiusX = clamp((state.rim.radiusX || 0.024) * rect.width, 7 * scale, 22 * scale);
   const radiusY = radiusX * 0.22;
+  const sample = state.poseSamples[state.poseSamples.length - 1];
+  const athleteX = sample?.footX ?? 0.5;
+  const side = state.rim.center.x < athleteX ? -1 : 1;
+  const boardX = center.x + side * radiusX * 2.15;
+  const boardTop = center.y - radiusX * 2.8;
+  const boardBottom = center.y + radiusX * 2.45;
+  const supportX = boardX + side * radiusX * 1.6;
+  const floorY = clamp(courtFloorY(rect), center.y + radiusX * 4.2, rect.y + rect.height - 8);
+
   ctx.save();
-  ctx.strokeStyle = "rgba(255,196,0,.78)";
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.width, rect.height);
+  ctx.clip();
+
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(255,255,255,.22)";
+  ctx.lineWidth = 1.05 * scale;
+  ctx.beginPath();
+  ctx.moveTo(boardX, boardTop);
+  ctx.lineTo(boardX, boardBottom);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(255,255,255,.13)";
+  ctx.setLineDash([4 * scale, 5 * scale]);
+  ctx.beginPath();
+  ctx.moveTo(supportX, boardBottom);
+  ctx.lineTo(supportX, floorY);
+  ctx.moveTo(boardX, center.y);
+  ctx.lineTo(supportX, center.y + radiusX * 0.8);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = "rgba(255, 196, 0, .78)";
   ctx.lineWidth = 1.8 * scale;
   ctx.beginPath();
   ctx.ellipse(center.x, center.y, radiusX, radiusY, 0, 0, Math.PI * 2);
   ctx.stroke();
+
   ctx.fillStyle = "rgba(255,255,255,.46)";
   ctx.font = "700 9px Inter, sans-serif";
-  ctx.fillText("virtual rim guide / support uncalibrated", rect.x + 12, Math.max(rect.y + 20, center.y - radiusX * 3));
+  ctx.fillText("virtual rim guide / support uncalibrated", rect.x + 12, Math.max(rect.y + 20, boardTop - 8));
   ctx.restore();
 }
 
@@ -2075,15 +2406,63 @@ function drawBallTrail(ctx, rect, scale) {
 }
 
 function drawCourtAndForceProxy(ctx, rect, scale) {
+  const sample = state.poseSamples[state.poseSamples.length - 1];
   const floorY = courtFloorY(rect);
+
   ctx.save();
   ctx.beginPath();
   ctx.rect(rect.x, rect.y, rect.width, rect.height);
   ctx.clip();
-  drawPerspectiveCourt(ctx, rect, floorY, scale);
-  ctx.fillStyle = "rgba(255,255,255,.5)";
-  ctx.font = "700 9px Inter, sans-serif";
-  ctx.fillText("vGRF proxy pending / no force-plate data", rect.x + 12, floorY - 28 * scale);
+
+  drawCourtGuide(ctx, rect, floorY, scale);
+  if (!sample) {
+    ctx.restore();
+    return;
+  }
+
+  const anchor = forceAnchorSample(sample);
+  const footX = clamp(rect.x + anchor.footX * rect.width, rect.x + 10, rect.x + rect.width - 10);
+  const currentProxy = currentLowerImpulseProxy(sample);
+  const peakProxy = lowerImpulseProxyPeak();
+  if (!Number.isFinite(currentProxy) || !Number.isFinite(peakProxy) || peakProxy <= 0 || currentProxy <= 0) {
+    ctx.restore();
+    return;
+  }
+  const relativeProxy = clamp(currentProxy / peakProxy, 0, 1);
+  if (relativeProxy < 0.08) {
+    ctx.restore();
+    return;
+  }
+  const arrowSize = clamp(rect.height * 0.24 * relativeProxy, 18 * scale, 92 * scale);
+
+  ctx.strokeStyle = "rgba(255, 196, 0, .88)";
+  ctx.fillStyle = "rgba(255, 196, 0, .88)";
+  ctx.lineWidth = 3.2 * scale;
+  const from = point(footX, floorY + 2);
+  const to = point(footX, floorY - arrowSize);
+  ctx.shadowColor = "rgba(255, 196, 0, .62)";
+  ctx.shadowBlur = 8 * scale;
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(to.x - 7 * scale, to.y + 14 * scale);
+  ctx.lineTo(to.x + 7 * scale, to.y + 14 * scale);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = "rgba(255, 196, 0, .18)";
+  ctx.beginPath();
+  ctx.ellipse(footX, floorY + 3 * scale, 22 * scale, 4.8 * scale, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.font = "800 10px Inter, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,.58)";
+  const labelX = clamp(footX + 8, rect.x + 10, rect.x + rect.width - 118);
+  ctx.fillText(`relative vGRF proxy ${Math.round(relativeProxy * 100)}%`, labelX, Math.max(rect.y + 22, to.y - 6));
   ctx.restore();
 }
 
@@ -2236,7 +2615,7 @@ function drawCanvas() {
         detectBallCandidate(rect, landmarks);
         drawBallTrail(ctx, rect, scale);
       } else {
-        drawCourtAndForceProxy(ctx, renderRect, scale);
+        drawCourtAndForceProxy(ctx, rect, scale);
       }
       drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
       if (state.activeView === "compare") drawComparePanel(ctx, width, height);
@@ -2264,7 +2643,14 @@ function drawCanvas() {
   ctx.textAlign = "left";
   const rimLabel = state.rim?.center ? "rim calibrated" : "tap Set Rim";
   const stableTrail = stableBallTrail();
-  const ballLabel = stableTrail.length >= 5 ? "ball trail locked" : state.ballTrail.length >= 3 ? "ball candidates unverified" : "ball pending";
+  const ballLabel =
+    state.importedBallTrail.length >= 3
+      ? `YOLO CSV ${stableTrail.length >= 5 ? "loaded" : "needs cleaned track"}`
+      : stableTrail.length >= 5
+        ? "ball trail locked"
+        : state.ballTrail.length >= 3
+          ? "ball candidates unverified"
+          : "ball pending";
   ctx.fillText(state.activeView === "full" ? `${rimLabel} / ${ballLabel}` : state.activeView, 18, 25);
   ctx.restore();
 
@@ -2276,6 +2662,17 @@ function bindEvents() {
     const [file] = event.target.files;
     if (file) runAnalysis(file);
   });
+
+  nodes.yoloCsvInput?.addEventListener("change", async (event) => {
+    const [file] = event.target.files;
+    if (!file) return;
+    const text = await file.text();
+    importYoloCsv(text, file.name);
+    event.target.value = "";
+  });
+
+  nodes.sourceVideo.addEventListener("loadedmetadata", renderCalibrationGuide);
+  nodes.sourceVideo.addEventListener("canplay", renderCalibrationGuide);
 
   document.addEventListener("click", (event) => {
     const actionTarget = event.target.closest("[data-action]");

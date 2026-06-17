@@ -274,8 +274,8 @@ button {
   background: var(--gold);
   opacity: var(--alpha, 0.55);
   transform: translate(-50%, 0);
-  animation: dotPulse 2200ms ease-in-out infinite;
-  animation-delay: calc(var(--i) * 95ms);
+  animation: dotPulse 3000ms cubic-bezier(0.32, 0.72, 0.28, 1) infinite;
+  animation-delay: calc(var(--i) * 165ms);
 }
 
 .arc-dots span:nth-child(1) {
@@ -371,10 +371,23 @@ button {
 }
 
 @keyframes dotPulse {
-  50% {
-    transform: translate(-50%, -0.16rem) scale(1.38);
+  0%,
+  16%,
+  100% {
+    transform: translate(-50%, 0) scale(0.86);
+    opacity: 0.24;
+  }
+
+  30% {
+    transform: translate(-50%, -0.12rem) scale(1.48);
     background: var(--orange);
     opacity: 1;
+  }
+
+  48% {
+    transform: translate(-50%, 0) scale(1);
+    background: var(--gold);
+    opacity: var(--alpha, 0.55);
   }
 }
 
@@ -523,10 +536,17 @@ button {
 .metric-card {
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.74);
+}
+
+.video-panel {
+  overflow: hidden;
+}
+
+.metric-card {
+  overflow: visible;
 }
 
 .original-panel {
@@ -570,14 +590,18 @@ button {
 }
 
 .inline-action {
+  display: inline-grid;
+  place-items: center;
   min-width: 4.15rem;
   min-height: 1.36rem;
+  border: 0;
   border-radius: 999px;
   background: var(--ink);
   color: #fff;
   padding: 0 0.52rem;
   font-size: 0.67rem;
   font-weight: 800;
+  cursor: pointer;
 }
 
 .inline-action.ghost {
@@ -620,6 +644,67 @@ button {
   color: #fff;
 }
 
+.calibration-guide {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.42rem 0.52rem 0.48rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.88);
+}
+
+.guide-head {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.guide-head strong {
+  color: var(--pink);
+  font-size: 0.66rem;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
+.guide-head span {
+  color: var(--sumi);
+  font-size: 0.69rem;
+  font-weight: 780;
+  line-height: 1.18;
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.24rem;
+}
+
+.guide-steps span {
+  min-width: 0;
+  min-height: 1.1rem;
+  border: 1px solid rgba(52, 48, 45, 0.13);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--muted);
+  padding: 0.15rem 0.24rem;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.54rem;
+  font-weight: 860;
+}
+
+.guide-steps span.current {
+  border-color: rgba(255, 47, 146, 0.4);
+  background: rgba(255, 47, 146, 0.1);
+  color: var(--pink);
+}
+
+.guide-steps span.done {
+  border-color: rgba(116, 201, 76, 0.34);
+  background: rgba(116, 201, 76, 0.11);
+  color: #3f8a2f;
+}
+
 .video-box,
 .canvas-box {
   position: relative;
@@ -631,6 +716,11 @@ button {
 
 .canvas-box {
   height: calc(100% - 6.2rem);
+}
+
+.original-panel .video-box {
+  height: calc(100% - 7.75rem);
+  min-height: 8.6rem;
 }
 
 .view-tabs {
@@ -904,7 +994,7 @@ button {
 
 @media (max-width: 390px), (max-height: 760px) {
   .screen {
-    padding: 0.55rem 0.55rem 2.6rem;
+    padding: 0.55rem;
   }
 
   .home-screen::after,

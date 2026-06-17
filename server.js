@@ -278,11 +278,60 @@ const server = http.createServer(async (request, response) => {
   }
 
   const extension = path.extname(filePath);
-  response.writeHead(200, {
+  const stat = fs.statSync(filePath);
+  const headers = {
     "Content-Type": contentTypes[extension] || "application/octet-stream",
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": extension === ".html" ? "no-store" : "public, max-age=3600"
+  };
+
+  if (extension === ".mp4") {
+    headers["Accept-Ranges"] = "bytes";
+    const range = request.headers.range;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (!match) {
+        response.writeHead(416, {
+          ...headers,
+          "Content-Range": `bytes */${stat.size}`
+        });
+        response.end();
+        return;
+      }
+
+      const start = match[1] ? Number(match[1]) : 0;
+      const end = match[2] ? Number(match[2]) : stat.size - 1;
+      if (start >= stat.size || end >= stat.size || start > end) {
+        response.writeHead(416, {
+          ...headers,
+          "Content-Range": `bytes */${stat.size}`
+        });
+        response.end();
+        return;
+      }
+
+      response.writeHead(206, {
+        ...headers,
+        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Content-Length": end - start + 1
+      });
+      if (request.method === "HEAD") {
+        response.end();
+        return;
+      }
+      fs.createReadStream(filePath, { start, end }).pipe(response);
+      return;
+    }
+  }
+
+  response.writeHead(200, {
+    ...headers,
+    "Content-Length": stat.size
   });
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
   fs.createReadStream(filePath).pipe(response);
 });
 

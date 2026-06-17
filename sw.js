@@ -1,4 +1,4 @@
-const CACHE_NAME = "arcai-prototype-v24";
+const CACHE_NAME = "arcai-prototype-v25";
 const APP_ASSETS = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const APP_ASSETS = [
   "./app.js",
   "./manifest.webmanifest",
   "./assets/arcai-logo.png",
+  "./assets/sample-shot.mp4",
   "./data/evidence.json",
   "./api/openapi.json"
 ];
