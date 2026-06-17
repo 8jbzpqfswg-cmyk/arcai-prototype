@@ -17,7 +17,8 @@ def main():
     parser.add_argument("video")
     parser.add_argument("--model", default="yolov8x.pt")
     parser.add_argument("--conf", type=float, default=0.03)
-    parser.add_argument("--imgsz", type=int, default=1280)
+    parser.add_argument("--imgsz", type=int, default=960)
+    parser.add_argument("--vid-stride", type=int, default=2)
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.video)
@@ -36,16 +37,18 @@ def main():
     min_box = max(10.0, min(width, height) * 0.012)
     max_box = min(width, height) * 0.16
 
-    for frame_index, result in enumerate(
+    for result_index, result in enumerate(
         model.predict(
             source=args.video,
             conf=args.conf,
             iou=0.45,
             imgsz=args.imgsz,
+            vid_stride=args.vid_stride,
             stream=True,
             verbose=False,
         )
     ):
+        frame_index = result_index * max(1, args.vid_stride)
         boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
             continue

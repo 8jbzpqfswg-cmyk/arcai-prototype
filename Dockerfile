@@ -9,13 +9,13 @@ WORKDIR /app
 COPY package.json ./
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
-RUN python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+RUN python3 -c "from ultralytics import YOLO; YOLO('yolov8x.pt')"
 COPY . .
 
 ENV NODE_ENV=production
 ENV FFMPEG_PATH=ffmpeg
 ENV PYTHON_PATH=python3
-ENV ARCAI_YOLO_MODEL=yolov8n.pt
+ENV ARCAI_YOLO_MODEL=yolov8x.pt
 
 EXPOSE 4173
 

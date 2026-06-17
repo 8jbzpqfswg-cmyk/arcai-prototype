@@ -67,7 +67,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-30";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-31";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -1066,7 +1066,7 @@ async function runAnalysis(file) {
         nodes.videoIssue.textContent = "";
         state.videoIssue = null;
       }
-      setEngineStatus("Video ready / ball detecting");
+      setEngineStatus("Video ready / ball detecting (YOLOv8x)");
       detectServerBallTrack(processed.url)
         .then((ballTrack) => {
           const yoloLoaded = applyServerBallTrack(ballTrack, "YOLO auto");
