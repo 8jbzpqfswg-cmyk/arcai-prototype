@@ -68,7 +68,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260619-arcai-34";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260619-arcai-35";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -1479,17 +1479,24 @@ function handleRimPick(event) {
   }
 
   if (state.rimPickMode === "ball") {
+    const sourceWidth = nodes.sourceVideo.videoWidth || 1;
+    const sourceHeight = nodes.sourceVideo.videoHeight || 1;
+    const radiusPx = Math.max(4, (state.rim?.radiusX || 0.018) * sourceWidth * 0.5);
     createBallTemplate(p);
+    state.ballTrail = [];
+    state.lastBallTime = -1;
+    state.lastBallCandidate = null;
     pushBallCandidate({
       normalized: point(p.x, p.y),
-      x: 0,
-      y: 0,
-      radius: Math.max(4, (state.rim?.radiusX || 0.018) * (nodes.sourceVideo.videoWidth || 480) * 0.5),
-      confidence: 0.92,
+      x: p.x * sourceWidth,
+      y: p.y * sourceHeight,
+      radius: radiusPx,
+      confidence: 1,
       nearPose: false,
       source: "manual",
       seeded: true
     });
+    state.ballStatus = "manual_seeded";
     state.rimPickMode = "idle";
     setRimPickText(t("ballSeededTitle"), t("ballSeededBody"));
     setTimeout(() => {
@@ -2242,6 +2249,22 @@ function stableBallTrail() {
   return cleaned;
 }
 
+
+function manualBallVisualTrail() {
+  const raw = state.ballTrail
+    .filter((item) => item?.normalized && (item.seeded || item.source === "manual" || item.source === "template"))
+    .slice(-12);
+  if (!raw.length) return [];
+  const visible = [];
+  for (const item of raw) {
+    const previous = visible[visible.length - 1];
+    if (!previous || distance(item.normalized, previous.normalized) <= 0.24) {
+      visible.push(item);
+    }
+  }
+  return visible;
+}
+
 function computeBallMetrics() {
   if (!state.analysis) return;
   const trail = stableBallTrail();
@@ -2589,9 +2612,19 @@ function drawVirtualRimScene(ctx, rect, scale) {
 }
 
 function drawBallTrail(ctx, rect, scale) {
-  const visibleTrail = state.importedBallTrail.length >= 3
+  let visibleTrail = state.importedBallTrail.length >= 3
     ? importedBallTrailPoints()
     : stableBallTrail();
+  if (!visibleTrail.length) visibleTrail = manualBallVisualTrail();
+  if (visibleTrail.length === 1) {
+    ctx.save();
+    const p = mapNormalizedPoint(visibleTrail[0].normalized, rect);
+    ctx.shadowColor = "rgba(255, 196, 0, .72)";
+    ctx.shadowBlur = 5 * scale;
+    dot(ctx, p, clamp((visibleTrail[0].radius || 4) * 0.78, 3, 6.2) * scale, "rgba(255, 196, 0, .92)", "rgba(255,255,255,.75)");
+    ctx.restore();
+    return;
+  }
   const segments = splitBallTrailSegments(visibleTrail);
   if (!segments.length) return;
   ctx.save();
@@ -2865,6 +2898,8 @@ function drawCanvas() {
       ? `auto ball ${stableTrail.length >= 5 ? "locked" : "needs review"}`
       : stableTrail.length >= 5
         ? "ball trail locked"
+        : state.ballTrail.some((item) => item.seeded || item.source === "manual")
+          ? "manual ball set"
         : state.ballTrail.length >= 3
           ? "ball candidates unverified"
           : "ball pending";
