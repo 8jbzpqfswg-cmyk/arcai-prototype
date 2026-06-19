@@ -554,7 +554,10 @@ button {
 }
 
 .original-panel {
-  height: auto;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(17rem, 1fr);
+  height: clamp(25rem, 62dvh, 36rem);
+  min-height: 25rem;
 }
 
 .reconstruction-panel {
@@ -723,9 +726,8 @@ button {
 }
 
 .original-panel .video-box {
-  height: auto;
-  min-height: clamp(14rem, 42dvh, 24rem);
-  aspect-ratio: 16 / 9;
+  height: 100%;
+  min-height: 17rem;
 }
 
 .view-tabs {
@@ -1037,11 +1039,14 @@ button {
   }
 
   .original-panel {
-    height: auto;
+    grid-template-rows: auto auto auto minmax(15rem, 1fr);
+    height: 24rem;
+    min-height: 24rem;
   }
 
   .original-panel .video-box {
-    min-height: 13.5rem;
+    height: 100%;
+    min-height: 15rem;
   }
 
   .reconstruction-panel {

@@ -68,7 +68,7 @@ const state = {
   fileCodec: null
 };
 
-const demoVideoSrc = "./assets/sample-shot.mp4?v=20260617-arcai-32";
+const demoVideoSrc = "./assets/sample-shot.mp4?v=20260619-arcai-34";
 const RIM_DIAMETER_M = 0.45;
 const SNAPSHOT_KEY = "arcai:last-analysis:v1";
 const POSE_METRIC_KEYS = new Set([
@@ -968,8 +968,16 @@ function waitForVideoReady() {
     video.addEventListener("loadeddata", done, { once: true });
     video.addEventListener("canplay", done, { once: true });
     video.addEventListener("error", done, { once: true });
-    setTimeout(done, 2800);
+    setTimeout(done, 9000);
   });
+}
+
+function clearVideoIssueIfReady() {
+  if (!decodedVideoIsUsable()) return;
+  nodes.videoIssue.classList.add("hidden");
+  nodes.videoIssue.textContent = "";
+  state.videoIssue = null;
+  renderCalibrationGuide();
 }
 
 function setEngineStatus(text) {
@@ -2882,6 +2890,8 @@ function bindEvents() {
 
   nodes.sourceVideo.addEventListener("loadedmetadata", renderCalibrationGuide);
   nodes.sourceVideo.addEventListener("canplay", renderCalibrationGuide);
+  nodes.sourceVideo.addEventListener("loadeddata", clearVideoIssueIfReady);
+  nodes.sourceVideo.addEventListener("canplay", clearVideoIssueIfReady);
 
   document.addEventListener("click", (event) => {
     const actionTarget = event.target.closest("[data-action]");
