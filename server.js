@@ -11,7 +11,9 @@ const LOCAL_FFMPEG_PATH = path.join(ROOT, "bin", "ffmpeg.exe");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(LOCAL_FFMPEG_PATH) ? LOCAL_FFMPEG_PATH : "ffmpeg");
 const PYTHON_PATH = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
 const YOLO_SCRIPT = path.join(ROOT, "scripts", "arcai_yolo_ball_track.py");
-const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || "yolov8n.pt";
+const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || path.join(ROOT, "models", "yolov8n.onnx");
+const FFMPEG_TIMEOUT_MS = Number(process.env.ARCAI_FFMPEG_TIMEOUT_MS || 240_000);
+const YOLO_TIMEOUT_MS = Number(process.env.ARCAI_YOLO_TIMEOUT_MS || 300_000);
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -125,6 +127,7 @@ function runFfmpeg(inputPath, outputPath) {
     }
     const args = [
       "-y",
+      "-nostdin",
       "-i",
       inputPath,
       "-map",
@@ -137,6 +140,8 @@ function runFfmpeg(inputPath, outputPath) {
       "ultrafast",
       "-crf",
       "30",
+      "-threads",
+      "1",
       "-pix_fmt",
       "yuv420p",
       "-an",
@@ -146,14 +151,26 @@ function runFfmpeg(inputPath, outputPath) {
     ];
     const child = spawn(FFMPEG_PATH, args, { windowsHide: true });
     let stderr = "";
+    let settled = false;
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`video conversion timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 1000)} seconds`));
+    }, FFMPEG_TIMEOUT_MS);
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
       if (stderr.length > 12_000) stderr = stderr.slice(-12_000);
     });
-    child.on("error", reject);
+    child.on("error", finish);
     child.on("close", (code) => {
-      if (code === 0 && fs.existsSync(outputPath)) resolve();
-      else reject(new Error(stderr || `ffmpeg exited with ${code}`));
+      if (code === 0 && fs.existsSync(outputPath)) finish();
+      else finish(new Error(stderr || `ffmpeg exited with ${code}`));
     });
   });
 }
@@ -171,7 +188,7 @@ function runYoloBallTrack(videoPath) {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       resolve({ ok: false, error: "YOLO ball detection timed out" });
-    }, 300_000);
+    }, YOLO_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -258,7 +275,11 @@ async function handleApi(request, response, pathname) {
       ok: true,
       service: "ArcAI prototype API",
       version: "0.1.0",
-      analysis_mode: "client_pose_api_pending"
+      analysis_mode: "client_pose_server_ball",
+      ball_detector: {
+        engine: "opencv-dnn-onnx",
+        model: YOLO_MODEL
+      }
     });
   }
 
