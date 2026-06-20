@@ -15,10 +15,10 @@ def is_ball_label(name):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("video")
-    parser.add_argument("--model", default="yolov8x.pt")
+    parser.add_argument("--model", default="yolov8n.pt")
     parser.add_argument("--conf", type=float, default=0.03)
-    parser.add_argument("--imgsz", type=int, default=960)
-    parser.add_argument("--vid-stride", type=int, default=2)
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--vid-stride", type=int, default=1)
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.video)

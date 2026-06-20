@@ -1075,8 +1075,8 @@ async function runAnalysis(file) {
         nodes.videoIssue.textContent = "";
         state.videoIssue = null;
       }
-      setEngineStatus("Video ready / ball detecting (YOLOv8x)");
-      detectServerBallTrack(processed.url)
+      setEngineStatus("Video ready / ball detecting (YOLOv8n)");
+      detectServerBallTrack(processed.analysis_url || processed.url)
         .then((ballTrack) => {
           const yoloLoaded = applyServerBallTrack(ballTrack, "YOLO auto");
           setEngineStatus(yoloLoaded ? "Ball detector active" : "Ball detector pending");

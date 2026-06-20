@@ -11,7 +11,7 @@ const LOCAL_FFMPEG_PATH = path.join(ROOT, "bin", "ffmpeg.exe");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(LOCAL_FFMPEG_PATH) ? LOCAL_FFMPEG_PATH : "ffmpeg");
 const PYTHON_PATH = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
 const YOLO_SCRIPT = path.join(ROOT, "scripts", "arcai_yolo_ball_track.py");
-const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || "yolov8x.pt";
+const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || "yolov8n.pt";
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -130,13 +130,13 @@ function runFfmpeg(inputPath, outputPath) {
       "-map",
       "0:v:0",
       "-vf",
-      "scale=960:-2,fps=30",
+      "scale=720:-2,fps=30",
       "-c:v",
       "libx264",
       "-preset",
       "ultrafast",
       "-crf",
-      "28",
+      "30",
       "-pix_fmt",
       "yuv420p",
       "-an",
@@ -290,6 +290,7 @@ async function handleApi(request, response, pathname) {
         ok: true,
         source: file.filename,
         url: `/transcoded/${id}.mp4`,
+        analysis_url: `/transcoded/${path.basename(inputPath)}`,
         bytes: fs.statSync(outputPath).size,
         codec: "h264/aac"
       });
