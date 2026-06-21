@@ -72,7 +72,69 @@ def detect_ball(net, frame, image_size, confidence_threshold):
         "y1": y1,
         "x2": x2,
         "y2": y2,
+        "source": "yolo_onnx",
     }
+
+
+def motion_candidates(subtractor, frame, kernel):
+    mask = subtractor.apply(frame)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.dilate(mask, kernel, iterations=2)
+    frame_height, frame_width = frame.shape[:2]
+    min_area = max(20.0, frame_width * frame_height * 0.00002)
+    max_area = frame_width * frame_height * 0.004
+    candidates = []
+    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area <= min_area or area >= max_area:
+            continue
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter <= 0:
+            continue
+        circularity = 4.0 * np.pi * area / (perimeter * perimeter)
+        if circularity < 0.45:
+            continue
+        moments = cv2.moments(contour)
+        if moments["m00"] <= 0:
+            continue
+        center_x = float(moments["m10"] / moments["m00"])
+        center_y = float(moments["m01"] / moments["m00"])
+        if center_y >= frame_height * 0.92:
+            continue
+        x, y, width, height = cv2.boundingRect(contour)
+        candidates.append(
+            {
+                "x_center": center_x,
+                "y_center": center_y,
+                "width": float(width),
+                "height": float(height),
+                "x1": float(x),
+                "y1": float(y),
+                "x2": float(x + width),
+                "y2": float(y + height),
+                "circularity": float(circularity),
+            }
+        )
+    return candidates
+
+
+def nearest_motion_candidate(candidates, previous, max_distance):
+    if previous is None:
+        return None
+    ranked = []
+    for candidate in candidates:
+        distance = float(
+            np.hypot(
+                candidate["x_center"] - previous["x_center"],
+                candidate["y_center"] - previous["y_center"],
+            )
+        )
+        if distance <= max_distance:
+            ranked.append((distance, -candidate["circularity"], candidate))
+    if not ranked:
+        return None
+    return min(ranked, key=lambda item: (item[0], item[1]))[2]
 
 
 def main():
@@ -81,7 +143,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--conf", type=float, default=0.03)
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--vid-stride", type=int, default=1)
+    parser.add_argument("--vid-stride", type=int, default=5)
     args = parser.parse_args()
     started_at = time.monotonic()
 
@@ -98,31 +160,59 @@ def main():
     min_box = max(10.0, min(width, height) * 0.012)
     max_box = min(width, height) * 0.16
     track = []
+    yolo_detections = 0
     frame_index = 0
+    previous_ball = None
+    subtractor = cv2.createBackgroundSubtractorMOG2(
+        history=max(30, min(90, frames // 2)),
+        varThreshold=50,
+        detectShadows=False,
+    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    max_motion_jump = max(60.0, min(width, height) * 0.16)
 
     while True:
         ok, frame = cap.read()
         if not ok:
             break
+        candidates = motion_candidates(subtractor, frame, kernel)
+        row = None
         if frame_index % max(1, args.vid_stride) == 0:
             row = detect_ball(net, frame, args.imgsz, args.conf)
-            if row:
-                box_width = row["width"]
-                box_height = row["height"]
-                ratio = max(box_width, box_height) / max(1.0, min(box_width, box_height))
-                if min(box_width, box_height) >= min_box and max(box_width, box_height) <= max_box and ratio <= 2.35:
-                    row.update(
-                        {
-                            "frame": frame_index,
-                            "time_s": frame_index / fps,
-                            "class": "sports ball",
-                        }
-                    )
-                    track.append(row)
+            if row is not None:
+                yolo_detections += 1
+            else:
+                row = nearest_motion_candidate(candidates, previous_ball, max_motion_jump)
+                if row is not None:
+                    row["confidence"] = 0.0
+                    row["source"] = "motion_contour"
+        else:
+            row = nearest_motion_candidate(candidates, previous_ball, max_motion_jump)
+            if row is not None:
+                row["confidence"] = 0.0
+                row["source"] = "motion_contour"
+
+        if row:
+            box_width = row["width"]
+            box_height = row["height"]
+            ratio = max(box_width, box_height) / max(1.0, min(box_width, box_height))
+            if min(box_width, box_height) >= min_box and max(box_width, box_height) <= max_box and ratio <= 2.35:
+                row.update(
+                    {
+                        "frame": frame_index,
+                        "time_s": frame_index / fps,
+                        "class": "sports ball",
+                    }
+                )
+                track.append(row)
+                previous_ball = row
         frame_index += 1
 
     cap.release()
-    average_confidence = sum(row["confidence"] for row in track) / len(track) if track else 0.0
+    verified_rows = [row for row in track if row.get("source") == "yolo_onnx"]
+    average_confidence = (
+        sum(row["confidence"] for row in verified_rows) / len(verified_rows) if verified_rows else 0.0
+    )
     print(
         json.dumps(
             {
@@ -130,7 +220,8 @@ def main():
                 "engine": "opencv-dnn-onnx",
                 "model": args.model,
                 "video": {"width": width, "height": height, "fps": fps, "frames": frames},
-                "raw_detections": len(track),
+                "raw_detections": yolo_detections,
+                "verified_detections": len(verified_rows),
                 "track_points": len(track),
                 "average_confidence": average_confidence,
                 "elapsed_seconds": time.monotonic() - started_at,
