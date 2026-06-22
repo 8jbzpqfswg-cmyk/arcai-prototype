@@ -76,65 +76,65 @@ def detect_ball(net, frame, image_size, confidence_threshold):
     }
 
 
-def motion_candidates(subtractor, frame, kernel):
-    mask = subtractor.apply(frame)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.dilate(mask, kernel, iterations=2)
+def ball_template(frame, row):
     frame_height, frame_width = frame.shape[:2]
-    min_area = max(20.0, frame_width * frame_height * 0.00002)
-    max_area = frame_width * frame_height * 0.004
-    candidates = []
-    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area <= min_area or area >= max_area:
-            continue
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter <= 0:
-            continue
-        circularity = 4.0 * np.pi * area / (perimeter * perimeter)
-        if circularity < 0.45:
-            continue
-        moments = cv2.moments(contour)
-        if moments["m00"] <= 0:
-            continue
-        center_x = float(moments["m10"] / moments["m00"])
-        center_y = float(moments["m01"] / moments["m00"])
-        if center_y >= frame_height * 0.92:
-            continue
-        x, y, width, height = cv2.boundingRect(contour)
-        candidates.append(
-            {
-                "x_center": center_x,
-                "y_center": center_y,
-                "width": float(width),
-                "height": float(height),
-                "x1": float(x),
-                "y1": float(y),
-                "x2": float(x + width),
-                "y2": float(y + height),
-                "circularity": float(circularity),
-            }
-        )
-    return candidates
+    x1 = max(0, int(np.floor(row["x1"])))
+    y1 = max(0, int(np.floor(row["y1"])))
+    x2 = min(frame_width, int(np.ceil(row["x2"])))
+    y2 = min(frame_height, int(np.ceil(row["y2"])))
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+    return cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
 
 
-def nearest_motion_candidate(candidates, previous, max_distance):
-    if previous is None:
+def track_ball_template(frame, template, previous, velocity, threshold=0.34):
+    if template is None or previous is None:
         return None
-    ranked = []
-    for candidate in candidates:
-        distance = float(
-            np.hypot(
-                candidate["x_center"] - previous["x_center"],
-                candidate["y_center"] - previous["y_center"],
-            )
-        )
-        if distance <= max_distance:
-            ranked.append((distance, -candidate["circularity"], candidate))
-    if not ranked:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    frame_height, frame_width = gray.shape
+    speed = float(np.hypot(velocity[0], velocity[1]))
+    predicted_x = previous["x_center"] + velocity[0]
+    predicted_y = previous["y_center"] + velocity[1]
+    radius = max(80.0, speed * 2.2 + 40.0, max(previous["width"], previous["height"]) * 4.0)
+    search_x1 = max(0, int(np.floor(predicted_x - radius)))
+    search_y1 = max(0, int(np.floor(predicted_y - radius)))
+    search_x2 = min(frame_width, int(np.ceil(predicted_x + radius)))
+    search_y2 = min(frame_height, int(np.ceil(predicted_y + radius)))
+    search = gray[search_y1:search_y2, search_x1:search_x2]
+    if search.size == 0:
         return None
-    return min(ranked, key=lambda item: (item[0], item[1]))[2]
+
+    best = None
+    for scale in (0.82, 0.92, 1.0, 1.08, 1.18):
+        template_width = max(8, int(round(template.shape[1] * scale)))
+        template_height = max(8, int(round(template.shape[0] * scale)))
+        if template_width >= search.shape[1] or template_height >= search.shape[0]:
+            continue
+        scaled = cv2.resize(template, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        scores = cv2.matchTemplate(search, scaled, cv2.TM_CCOEFF_NORMED)
+        _, score, _, location = cv2.minMaxLoc(scores)
+        center_x = search_x1 + location[0] + template_width / 2.0
+        center_y = search_y1 + location[1] + template_height / 2.0
+        prediction_error = float(np.hypot(center_x - predicted_x, center_y - predicted_y))
+        rank = float(score) - 0.0015 * prediction_error
+        if best is None or rank > best[0]:
+            best = (rank, float(score), center_x, center_y, template_width, template_height)
+
+    if best is None or best[1] < threshold:
+        return None
+    _, score, center_x, center_y, template_width, template_height = best
+    return {
+        "confidence": score,
+        "x_center": center_x,
+        "y_center": center_y,
+        "width": float(template_width),
+        "height": float(template_height),
+        "x1": center_x - template_width / 2.0,
+        "y1": center_y - template_height / 2.0,
+        "x2": center_x + template_width / 2.0,
+        "y2": center_y + template_height / 2.0,
+        "source": "template_match",
+    }
 
 
 def main():
@@ -163,34 +163,24 @@ def main():
     yolo_detections = 0
     frame_index = 0
     previous_ball = None
-    subtractor = cv2.createBackgroundSubtractorMOG2(
-        history=max(30, min(90, frames // 2)),
-        varThreshold=50,
-        detectShadows=False,
-    )
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    max_motion_jump = max(60.0, min(width, height) * 0.16)
+    template = None
+    velocity = (0.0, 0.0)
+    frames_since_yolo = 10_000
+    max_template_gap = 18
 
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        candidates = motion_candidates(subtractor, frame, kernel)
         row = None
         if frame_index % max(1, args.vid_stride) == 0:
             row = detect_ball(net, frame, args.imgsz, args.conf)
             if row is not None:
                 yolo_detections += 1
-            else:
-                row = nearest_motion_candidate(candidates, previous_ball, max_motion_jump)
-                if row is not None:
-                    row["confidence"] = 0.0
-                    row["source"] = "motion_contour"
-        else:
-            row = nearest_motion_candidate(candidates, previous_ball, max_motion_jump)
-            if row is not None:
-                row["confidence"] = 0.0
-                row["source"] = "motion_contour"
+                template = ball_template(frame, row)
+                frames_since_yolo = 0
+        if row is None and frames_since_yolo <= max_template_gap:
+            row = track_ball_template(frame, template, previous_ball, velocity)
 
         if row:
             box_width = row["width"]
@@ -205,7 +195,17 @@ def main():
                     }
                 )
                 track.append(row)
+                if previous_ball is not None:
+                    measured_velocity = (
+                        row["x_center"] - previous_ball["x_center"],
+                        row["y_center"] - previous_ball["y_center"],
+                    )
+                    velocity = (
+                        velocity[0] * 0.45 + measured_velocity[0] * 0.55,
+                        velocity[1] * 0.45 + measured_velocity[1] * 0.55,
+                    )
                 previous_ball = row
+        frames_since_yolo += 1
         frame_index += 1
 
     cap.release()
