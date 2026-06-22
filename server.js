@@ -11,7 +11,7 @@ const LOCAL_FFMPEG_PATH = path.join(ROOT, "bin", "ffmpeg.exe");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(LOCAL_FFMPEG_PATH) ? LOCAL_FFMPEG_PATH : "ffmpeg");
 const PYTHON_PATH = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
 const YOLO_SCRIPT = path.join(ROOT, "scripts", "arcai_yolo_ball_track.py");
-const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || path.join(ROOT, "models", "yolov8n.onnx");
+const YOLO_MODEL = process.env.ARCAI_YOLO_MODEL || path.join(ROOT, "models", "yolov8x.onnx");
 const FFMPEG_TIMEOUT_MS = Number(process.env.ARCAI_FFMPEG_TIMEOUT_MS || 240_000);
 const YOLO_TIMEOUT_MS = Number(process.env.ARCAI_YOLO_TIMEOUT_MS || 300_000);
 
