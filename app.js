@@ -2611,47 +2611,72 @@ function drawVirtualRimScene(ctx, rect, scale) {
   ctx.restore();
 }
 
-function drawBallTrail(ctx, rect, scale) {
-  let visibleTrail = state.importedBallTrail.length >= 3
-    ? importedBallTrailPoints()
-    : stableBallTrail();
-  if (!visibleTrail.length) visibleTrail = manualBallVisualTrail();
-  if (visibleTrail.length === 1) {
-    ctx.save();
-    const p = mapNormalizedPoint(visibleTrail[0].normalized, rect);
-    ctx.shadowColor = "rgba(255, 196, 0, .72)";
-    ctx.shadowBlur = 5 * scale;
-    dot(ctx, p, clamp((visibleTrail[0].radius || 4) * 0.78, 3, 6.2) * scale, "rgba(255, 196, 0, .92)", "rgba(255,255,255,.75)");
-    ctx.restore();
-    return;
+
+function currentBallVisualPoint(trail) {
+  const timed = trail
+    .filter((item) => item && item.normalized && Number.isFinite(item.time))
+    .sort((a, b) => a.time - b.time);
+  if (!timed.length) return null;
+
+  const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
+  const first = timed[0];
+  const last = timed[timed.length - 1];
+  const averageStep = timed.length >= 2 ? (last.time - first.time) / Math.max(1, timed.length - 1) : 1 / 30;
+  const visibleWindow = clamp(averageStep * 2.5, 0.08, 0.18);
+  if (now < first.time - visibleWindow || now > last.time + visibleWindow) return null;
+
+  for (let index = 1; index < timed.length; index += 1) {
+    const previous = timed[index - 1];
+    const next = timed[index];
+    if (now < previous.time || now > next.time) continue;
+    const gap = next.time - previous.time;
+    if (gap <= 0 || gap > 0.28) break;
+    const ratio = clamp((now - previous.time) / gap, 0, 1);
+    return {
+      normalized: point(
+        previous.normalized.x + (next.normalized.x - previous.normalized.x) * ratio,
+        previous.normalized.y + (next.normalized.y - previous.normalized.y) * ratio
+      ),
+      time: now,
+      radius: previous.radius + ((next.radius || previous.radius) - previous.radius) * ratio,
+      confidence: Math.min(previous.confidence ?? 0.5, next.confidence ?? 0.5),
+      source: "display_interpolation",
+      imported: previous.imported || next.imported
+    };
   }
-  const segments = splitBallTrailSegments(visibleTrail);
-  if (!segments.length) return;
-  ctx.save();
-  ctx.strokeStyle = "rgba(255, 196, 0, .88)";
-  ctx.lineWidth = 1.7 * scale;
-  ctx.shadowColor = "rgba(255, 196, 0, .65)";
-  ctx.shadowBlur = 4 * scale;
-  for (const segment of segments) {
-    const points = segment.map((item) => mapNormalizedPoint(item.normalized, rect));
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let index = 1; index < points.length - 1; index += 1) {
-      const current = points[index];
-      const next = points[index + 1];
-      const mid = point((current.x + next.x) / 2, (current.y + next.y) / 2);
-      ctx.quadraticCurveTo(current.x, current.y, mid.x, mid.y);
+
+  let nearest = first;
+  let nearestDiff = Math.abs(now - first.time);
+  for (const item of timed) {
+    const diff = Math.abs(now - item.time);
+    if (diff < nearestDiff) {
+      nearest = item;
+      nearestDiff = diff;
     }
-    const lastPoint = points[points.length - 1];
-    ctx.lineTo(lastPoint.x, lastPoint.y);
-    ctx.stroke();
   }
-  const dots = segments.flat().slice(-18);
-  dots.forEach((item, index) => {
-    const p = mapNormalizedPoint(item.normalized, rect);
-    const alpha = 0.22 + (index / Math.max(1, dots.length)) * 0.58;
-    dot(ctx, p, clamp((item.radius || 3.5) * 0.78, 2, 5.8) * scale, `rgba(255, 196, 0, ${alpha})`, "rgba(0,0,0,.3)");
-  });
+  return nearestDiff <= visibleWindow ? nearest : null;
+}
+
+function drawBallTrail(ctx, rect, scale) {
+  let visibleTrail = importedBallTrailPoints();
+  if (visibleTrail.length < 3) visibleTrail = stableBallTrail();
+  if (!visibleTrail.length) visibleTrail = manualBallVisualTrail();
+
+  const currentBall = currentBallVisualPoint(visibleTrail);
+  if (!currentBall) return;
+
+  ctx.save();
+  const p = mapNormalizedPoint(currentBall.normalized, rect);
+  const alpha = currentBall.source === "display_interpolation" ? 0.72 : 0.94;
+  ctx.shadowColor = `rgba(255, 196, 0, ${alpha * 0.7})`;
+  ctx.shadowBlur = 5 * scale;
+  dot(
+    ctx,
+    p,
+    clamp((currentBall.radius || 4) * 0.92, 3.2, 7) * scale,
+    `rgba(255, 196, 0, ${alpha})`,
+    "rgba(255,255,255,.78)"
+  );
   ctx.restore();
 }
 
