@@ -382,8 +382,10 @@ def main():
         raw.to_csv(args.raw_output, index=False)
 
     track = build_track(raw, width)
-    if engine == "motion_color_round":
-        track = extend_track_with_color(args.video, track, width, height, fps)
+    # NOTE: color-continuity extension disabled. On the real IMG_7327 shot it
+    # latched onto the orange rim after the ball had passed (27 static points at
+    # ~(295,455)), a generalizable false positive since every hoop has an orange
+    # rim. Return only the verified core motion track.
     output_columns = [
         "frame",
         "time_s",
