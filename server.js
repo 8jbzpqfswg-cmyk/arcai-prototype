@@ -277,7 +277,8 @@ async function handleApi(request, response, pathname) {
       version: "0.1.0",
       analysis_mode: "client_pose_server_ball",
       ball_detector: {
-        engine: "opencv-dnn-onnx",
+        engine: "motion_color_round",
+        fallback: "ultralytics-yolov8x",
         model: YOLO_MODEL
       }
     });
