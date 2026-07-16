@@ -85,6 +85,7 @@ const POSE_METRIC_KEYS = new Set([
   "hand_shot_risk",
   "kinetic_chain_index",
   "knee_to_release_ms",
+  "two_motion_ms",
   "grf_release_coupling_ms",
   "vgrf_proxy_peak_bw",
   "landing_drift_pct"
@@ -138,6 +139,7 @@ const baseAnalysis = {
     hand_shot_risk: null,
     kinetic_chain_index: null,
     knee_to_release_ms: null,
+    two_motion_ms: null,
     grf_release_coupling_ms: null,
     vgrf_proxy_peak_bw: null,
     landing_drift_cm: null,
@@ -290,7 +292,8 @@ const tabContent = {
       ["lower_to_wrist_score", "Chain score", (m) => formatMetric(m.lower_to_wrist_score, "/100")],
       ["hand_shot_risk", "Hand-shot risk", (m) => formatMetric(m.hand_shot_risk, "/100")],
       ["kinetic_chain_index", "Kinetic chain", (m) => formatMetric(m.kinetic_chain_index, "/100")],
-      ["knee_to_release_ms", "Knee to wrist peak", (m) => formatMetric(m.knee_to_release_ms, "ms")]
+      ["knee_to_release_ms", "Knee to wrist peak", (m) => formatMetric(m.knee_to_release_ms, "ms")],
+      ["two_motion_ms", "Two-motion (knee→elbow)", (m) => formatMetric(m.two_motion_ms, "ms")]
     ],
     discussion:
       "This can support a coach conversation about whether the shot is one-motion, two-motion, or hybrid.",
@@ -342,7 +345,8 @@ const tabContentJa = {
       lower_to_wrist_score: "下肢から手首までの連動性",
       hand_shot_risk: "手打ち傾向",
       kinetic_chain_index: "運動連鎖",
-      knee_to_release_ms: "膝伸展から手首上昇ピーク"
+      knee_to_release_ms: "膝伸展から手首上昇ピーク",
+      two_motion_ms: "手打ち度(膝→肘 伸展ピーク差)"
     },
     discussion:
       "下肢の伸展、体幹、上肢、手首のタイミング差を、指導者と共有する観察データとして使います。",
@@ -1692,6 +1696,7 @@ function makePoseSample(landmarks) {
     wristY: points.wrist.y,
     wristHeightPct: clamp(((floorY - points.wrist.y) / bodyHeight) * 100, 0, 165),
     kneeAngle: angleDeg(points.hip, points.knee, points.ankle),
+    elbowAngle: points.elbow ? angleDeg(points.shoulder, points.elbow, points.wrist) : null,
     hipAngle: angleDeg(points.shoulder, points.hip, points.knee),
     trunkLeanDeg,
     forceAnchor: point(footX, floorY)
@@ -1741,17 +1746,40 @@ function computePoseMetrics(samples) {
     const kneeExtension = (current.kneeAngle - prev.kneeAngle) / dt;
     const hipRise = ((prev.hipY - current.hipY) / height / dt) * 100;
     const wristRise = ((prev.wristY - current.wristY) / height / dt) * 100;
+    const elbowValid = Number.isFinite(prev.elbowAngle) && Number.isFinite(current.elbowAngle);
+    const elbowExtension = elbowValid ? (current.elbowAngle - prev.elbowAngle) / dt : 0;
     impulses.push({
       time: current.time,
       lower: Math.max(0, kneeExtension) + Math.max(0, hipRise) * 3,
       wrist: Math.max(0, wristRise),
-      hipRise: Math.max(0, hipRise)
+      hipRise: Math.max(0, hipRise),
+      kneeExt: Math.max(0, kneeExtension),
+      elbowExt: Math.max(0, elbowExtension),
+      elbowValid: elbowValid ? 1 : 0
     });
   }
 
   if (impulses.length < 4) return metrics;
   const lowerPeak = pickPeak(impulses, "lower");
   const wristPeak = pickPeak(impulses, "wrist");
+
+  // Two-motion index (手打ち度): time gap between peak knee-extension velocity
+  // (lower body drives) and peak elbow-extension velocity (upper body drives),
+  // using the same peak-of-derivative method as the timing metric above. Kept
+  // as observation only (no good/bad verdict). Gated to 未確定 unless the elbow
+  // is tracked through enough of the shot and both extension peaks are clear,
+  // so a poorly-framed or occluded arm never produces a fabricated number.
+  const elbowTrackedCount = impulses.reduce((sum, item) => sum + item.elbowValid, 0);
+  const kneeExtPeak = pickPeak(impulses, "kneeExt");
+  const elbowExtPeak = pickPeak(impulses, "elbowExt");
+  const enoughElbow = elbowTrackedCount >= Math.max(4, Math.round(impulses.length * 0.5));
+  const clearExtPeaks = kneeExtPeak.kneeExt > 40 && elbowExtPeak.elbowExt > 40 && elbowExtPeak.elbowValid === 1;
+  const rawTwoMotionMs = (elbowExtPeak.time - kneeExtPeak.time) * 1000;
+  metrics.two_motion_ms =
+    enoughElbow && clearExtPeaks && rawTwoMotionMs > -300 && rawTwoMotionMs < 500
+      ? roundMetric(rawTwoMotionMs, 0)
+      : null;
+
   metrics.vgrf_proxy_peak_bw = roundMetric(
     clamp(lowerMotionScore * 0.7 + clamp(lowerPeak.lower / 520 * 100, 0, 100) * 0.3, 0, 100),
     0
