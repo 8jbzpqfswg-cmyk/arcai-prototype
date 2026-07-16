@@ -42,6 +42,9 @@ const state = {
   poseEnginePromise: null,
   poseResult: null,
   lastPoseTime: -1,
+  poseRoi: null,
+  poseImageLandmarker: null,
+  poseCropCanvas: document.createElement("canvas"),
   poseSamples: [],
   heldPoseMetrics: {},
   poseMetricsHeld: false,
@@ -788,6 +791,7 @@ function setVideo(file) {
   state.previousSnapshot = loadPreviousSnapshot();
   state.snapshotSaved = false;
   state.poseResult = null;
+  state.poseRoi = null;
   state.lastPoseTime = -1;
   state.poseSamples = [];
   state.heldPoseMetrics = {};
@@ -838,6 +842,7 @@ function setTranscodedVideo(url, originalName) {
   state.selectedUrl = new URL(url, baseUrl).href;
   state.selectedUrlIsObject = false;
   state.poseResult = null;
+  state.poseRoi = null;
   state.lastPoseTime = -1;
   state.poseSamples = [];
   state.heldPoseMetrics = {};
@@ -1018,6 +1023,21 @@ async function loadPoseEngine() {
           minPosePresenceConfidence: 0.45,
           minTrackingConfidence: 0.45
         });
+        // Best-effort second detector in IMAGE mode (stateless, no frame-to-frame
+        // tracker). Used only to retry small-subject frames on an upscaled crop,
+        // isolated from the VIDEO landmarker above so it can never disturb it.
+        try {
+          state.poseImageLandmarker = await tasksVision.PoseLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: modelUrl },
+            runningMode: "IMAGE",
+            numPoses: 1,
+            minPoseDetectionConfidence: 0.4,
+            minPosePresenceConfidence: 0.4,
+            minTrackingConfidence: 0.4
+          });
+        } catch {
+          state.poseImageLandmarker = null;
+        }
         state.poseEngine = { landmarker, error: null, source: candidate.module };
         setEngineStatus("Pose API active");
         return state.poseEngine;
@@ -1809,6 +1829,92 @@ function appendPoseSample(landmarks) {
   }
 }
 
+function landmarksNormBBox(landmarks) {
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, any = false;
+  for (const lm of landmarks) {
+    const score = lm.visibility ?? lm.presence ?? 1;
+    if (score < 0.3) continue;
+    any = true;
+    if (lm.x < x0) x0 = lm.x;
+    if (lm.y < y0) y0 = lm.y;
+    if (lm.x > x1) x1 = lm.x;
+    if (lm.y > y1) y1 = lm.y;
+  }
+  return any ? { x0, y0, x1, y1 } : null;
+}
+
+function expandPoseRoi(box) {
+  // Extra headroom because the arms rise above the head at release; enough
+  // side/foot room for the dip and jump.
+  const w = Math.max(0.02, box.x1 - box.x0);
+  const h = Math.max(0.02, box.y1 - box.y0);
+  return {
+    x0: clamp(box.x0 - Math.max(0.06, w * 0.5), 0, 1),
+    y0: clamp(box.y0 - Math.max(0.1, h * 0.55), 0, 1),
+    x1: clamp(box.x1 + Math.max(0.06, w * 0.5), 0, 1),
+    y1: clamp(box.y1 + Math.max(0.05, h * 0.28), 0, 1)
+  };
+}
+
+function smoothPoseRoi(prev, next) {
+  if (!prev) return next;
+  const a = 0.5;
+  return {
+    x0: prev.x0 + (next.x0 - prev.x0) * a,
+    y0: prev.y0 + (next.y0 - prev.y0) * a,
+    x1: prev.x1 + (next.x1 - prev.x1) * a,
+    y1: prev.y1 + (next.y1 - prev.y1) * a
+  };
+}
+
+function remapLandmarksFromRoi(landmarks, roi) {
+  const rw = roi.x1 - roi.x0;
+  const rh = roi.y1 - roi.y0;
+  return landmarks.map((lm) => ({
+    ...lm,
+    x: roi.x0 + lm.x * rw,
+    y: roi.y0 + lm.y * rh,
+    z: (lm.z ?? 0) * rw
+  }));
+}
+
+// Retry detection on an upscaled crop of the tracked player region, using the
+// isolated IMAGE-mode detector. Returns landmarks remapped to full-frame
+// normalized coordinates, or null. Never throws.
+function detectPoseOnRoi(video, roi) {
+  const lm = state.poseImageLandmarker;
+  if (!lm) return null;
+  const vw = video.videoWidth || 0;
+  const vh = video.videoHeight || 0;
+  if (vw <= 0 || vh <= 0) return null;
+  try {
+    const cropW = Math.max(1, Math.round((roi.x1 - roi.x0) * vw));
+    const cropH = Math.max(1, Math.round((roi.y1 - roi.y0) * vh));
+    const scaleUp = clamp(512 / cropH, 1, 4);
+    const canvas = state.poseCropCanvas;
+    canvas.width = Math.max(1, Math.round(cropW * scaleUp));
+    canvas.height = Math.max(1, Math.round(cropH * scaleUp));
+    const cctx = canvas.getContext("2d");
+    cctx.drawImage(
+      video,
+      Math.round(roi.x0 * vw), Math.round(roi.y0 * vh), cropW, cropH,
+      0, 0, canvas.width, canvas.height
+    );
+    const res = lm.detect(canvas);
+    const found = res?.landmarks?.[0];
+    if (!found?.length) return null;
+    return { ...res, landmarks: [remapLandmarksFromRoi(found, roi)] };
+  } catch {
+    return null;
+  }
+}
+
+// Primary path is the original full-frame VIDEO detection, left untouched so it
+// can never regress. Basketball footage frames the player small (player + rim
+// in one shot) and full-frame MediaPipe loses the body during the fast shot;
+// when that happens we additionally try an upscaled crop with the independent
+// IMAGE-mode detector. Because the two detectors share no state, this can only
+// add detections, never remove them: the worst case equals today's behavior.
 function detectPoseForCurrentFrame() {
   const engine = state.poseEngine?.landmarker;
   const video = nodes.sourceVideo;
@@ -1816,10 +1922,26 @@ function detectPoseForCurrentFrame() {
   if (Math.abs(video.currentTime - state.lastPoseTime) < 0.016 && state.poseResult) return state.poseResult;
 
   try {
-    state.poseResult = engine.detectForVideo(video, performance.now());
+    let result = engine.detectForVideo(video, performance.now());
     state.lastPoseTime = video.currentTime;
-    if (state.poseResult?.landmarks?.[0]?.length) setEngineStatus("Pose API active");
-    else setEngineStatus("Pose not detected");
+
+    let found = result?.landmarks?.[0];
+    if (found?.length) {
+      const bbox = landmarksNormBBox(found);
+      if (bbox) state.poseRoi = smoothPoseRoi(state.poseRoi, expandPoseRoi(bbox));
+    } else if (state.poseRoi) {
+      const cropped = detectPoseOnRoi(video, state.poseRoi);
+      const croppedLm = cropped?.landmarks?.[0];
+      if (croppedLm?.length) {
+        result = cropped;
+        found = croppedLm;
+        const bbox = landmarksNormBBox(croppedLm);
+        if (bbox) state.poseRoi = smoothPoseRoi(state.poseRoi, expandPoseRoi(bbox));
+      }
+    }
+
+    state.poseResult = result;
+    setEngineStatus(found?.length ? "Pose API active" : "Pose not detected");
   } catch (error) {
     state.poseResult = null;
     window.__arcaiDebug = {
