@@ -85,7 +85,8 @@ const POSE_METRIC_KEYS = new Set([
   "hand_shot_risk",
   "kinetic_chain_index",
   "knee_to_release_ms",
-  "two_motion_ms",
+  "grf_to_lower_ms",
+  "lower_to_upper_ms",
   "grf_release_coupling_ms",
   "vgrf_proxy_peak_bw",
   "landing_drift_pct"
@@ -139,7 +140,8 @@ const baseAnalysis = {
     hand_shot_risk: null,
     kinetic_chain_index: null,
     knee_to_release_ms: null,
-    two_motion_ms: null,
+    grf_to_lower_ms: null,
+    lower_to_upper_ms: null,
     grf_release_coupling_ms: null,
     vgrf_proxy_peak_bw: null,
     landing_drift_cm: null,
@@ -293,7 +295,8 @@ const tabContent = {
       ["hand_shot_risk", "Hand-shot risk", (m) => formatMetric(m.hand_shot_risk, "/100")],
       ["kinetic_chain_index", "Kinetic chain", (m) => formatMetric(m.kinetic_chain_index, "/100")],
       ["knee_to_release_ms", "Knee to wrist peak", (m) => formatMetric(m.knee_to_release_ms, "ms")],
-      ["two_motion_ms", "Two-motion (knee→elbow)", (m) => formatMetric(m.two_motion_ms, "ms")]
+      ["grf_to_lower_ms", "Force→leg gap", (m) => formatMetric(m.grf_to_lower_ms, "ms")],
+      ["lower_to_upper_ms", "Leg→arm gap (two-motion)", (m) => formatMetric(m.lower_to_upper_ms, "ms")]
     ],
     discussion:
       "This can support a coach conversation about whether the shot is one-motion, two-motion, or hybrid.",
@@ -346,7 +349,8 @@ const tabContentJa = {
       hand_shot_risk: "手打ち傾向",
       kinetic_chain_index: "運動連鎖",
       knee_to_release_ms: "膝伸展から手首上昇ピーク",
-      two_motion_ms: "手打ち度(膝→肘 伸展ピーク差)"
+      grf_to_lower_ms: "床反力→下肢 (ms)",
+      lower_to_upper_ms: "下肢→上肢 手打ち度 (ms)"
     },
     discussion:
       "下肢の伸展、体幹、上肢、手首のタイミング差を、指導者と共有する観察データとして使います。",
@@ -1627,6 +1631,39 @@ function pickPeak(items, key) {
   return items.reduce((best, item) => (item[key] > best[key] ? item : best), items[0]);
 }
 
+function peakInWindow(items, key, tCenter, before, after) {
+  let best = null;
+  for (const item of items) {
+    if (item.time < tCenter - before || item.time > tCenter + after) continue;
+    if (!best || item[key] > best[key]) best = item;
+  }
+  return best;
+}
+
+// Upward acceleration of the center-of-mass proxy (hip midpoint) over time.
+// Newton's f = m·a means upward COM acceleration stands in for upward ground
+// reaction force. hipY is normalized (y increases downward), so upward accel is
+// the negative second derivative. The hip series is lightly smoothed first,
+// because a raw second derivative at 30fps is very noisy.
+function comUpwardAccelSeries(samples) {
+  if (samples.length < 5) return [];
+  const sy = samples.map((sample, index) => {
+    const a = samples[Math.max(0, index - 1)].hipY;
+    const b = sample.hipY;
+    const c = samples[Math.min(samples.length - 1, index + 1)].hipY;
+    return (a + b + c) / 3;
+  });
+  const out = [];
+  for (let index = 1; index < samples.length - 1; index += 1) {
+    const dt1 = samples[index].time - samples[index - 1].time;
+    const dt2 = samples[index + 1].time - samples[index].time;
+    if (dt1 <= 0.005 || dt1 > 0.25 || dt2 <= 0.005 || dt2 > 0.25) continue;
+    const d2y = 2 * (sy[index - 1] / (dt1 * (dt1 + dt2)) - sy[index] / (dt1 * dt2) + sy[index + 1] / (dt2 * (dt1 + dt2)));
+    out.push({ time: samples[index].time, accUp: -d2y });
+  }
+  return out;
+}
+
 function visiblePoseBounds(landmarks) {
   const visible = landmarks.filter((landmark) => landmarkIsVisible(landmark, 0.28));
   if (!visible.length) return null;
@@ -1763,22 +1800,32 @@ function computePoseMetrics(samples) {
   const lowerPeak = pickPeak(impulses, "lower");
   const wristPeak = pickPeak(impulses, "wrist");
 
-  // Two-motion index (手打ち度): time gap between peak knee-extension velocity
-  // (lower body drives) and peak elbow-extension velocity (upper body drives),
-  // using the same peak-of-derivative method as the timing metric above. Kept
-  // as observation only (no good/bad verdict). Gated to 未確定 unless the elbow
-  // is tracked through enough of the shot and both extension peaks are clear,
-  // so a poorly-framed or occluded arm never produces a fabricated number.
-  const elbowTrackedCount = impulses.reduce((sum, item) => sum + item.elbowValid, 0);
+  // 3-link kinetic chain timing (proximal→distal), observation only:
+  //   ① virtual ground reaction = peak upward acceleration of the COM (hip)
+  //   ② lower-body drive = peak knee-extension velocity
+  //   ③ upper-body drive = peak elbow-extension velocity
+  // Reported as the two gaps so a coach can see WHERE transfer lags:
+  //   grf_to_lower_ms (force→leg) and lower_to_upper_ms (leg→arm, i.e. 手打ち度).
+  // Peaks ②③ are searched in a window around the knee drive so a landing spike
+  // can't be mistaken for the shot. Each gap is gated to 未確定 unless its inputs
+  // are clearly tracked, so a poorly-framed clip never yields a fabricated
+  // number. The GRF proxy is a 2nd derivative (noisiest at 30fps).
   const kneeExtPeak = pickPeak(impulses, "kneeExt");
-  const elbowExtPeak = pickPeak(impulses, "elbowExt");
+  const elbowExtPeak = peakInWindow(impulses, "elbowExt", kneeExtPeak.time, 0.1, 0.4);
+  const elbowTrackedCount = impulses.reduce((sum, item) => sum + item.elbowValid, 0);
   const enoughElbow = elbowTrackedCount >= Math.max(4, Math.round(impulses.length * 0.5));
-  const clearExtPeaks = kneeExtPeak.kneeExt > 40 && elbowExtPeak.elbowExt > 40 && elbowExtPeak.elbowValid === 1;
-  const rawTwoMotionMs = (elbowExtPeak.time - kneeExtPeak.time) * 1000;
-  metrics.two_motion_ms =
-    enoughElbow && clearExtPeaks && rawTwoMotionMs > -300 && rawTwoMotionMs < 500
-      ? roundMetric(rawTwoMotionMs, 0)
-      : null;
+
+  if (elbowExtPeak && enoughElbow && kneeExtPeak.kneeExt > 40 && elbowExtPeak.elbowExt > 40) {
+    const legToArmMs = (elbowExtPeak.time - kneeExtPeak.time) * 1000;
+    metrics.lower_to_upper_ms = legToArmMs > -300 && legToArmMs < 500 ? roundMetric(legToArmMs, 0) : null;
+  }
+
+  const comAccel = comUpwardAccelSeries(stableSamples);
+  const grfPeak = comAccel.length ? peakInWindow(comAccel, "accUp", kneeExtPeak.time, 0.3, 0.06) : null;
+  if (grfPeak && grfPeak.accUp > 0 && kneeExtPeak.kneeExt > 40) {
+    const forceToLegMs = (kneeExtPeak.time - grfPeak.time) * 1000;
+    metrics.grf_to_lower_ms = forceToLegMs > -100 && forceToLegMs < 400 ? roundMetric(forceToLegMs, 0) : null;
+  }
 
   metrics.vgrf_proxy_peak_bw = roundMetric(
     clamp(lowerMotionScore * 0.7 + clamp(lowerPeak.lower / 520 * 100, 0, 100) * 0.3, 0, 100),
