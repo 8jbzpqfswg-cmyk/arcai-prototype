@@ -1092,6 +1092,7 @@ async function runAnalysis(file) {
   let engine = state.poseEngine;
   const codec = state.fileCodec;
   const likelyHevc = codec?.hvc1 || codec?.hev1;
+  let ballTrackPromise = null;
 
   if (file) {
     showVideoIssue("Preparing video", "ArcAI is creating a browser-readable MP4.");
@@ -1107,7 +1108,7 @@ async function runAnalysis(file) {
         state.videoIssue = null;
       }
       setEngineStatus("Video ready / ball detecting (YOLOv8x)");
-      detectServerBallTrack(processed.url || processed.analysis_url)
+      ballTrackPromise = detectServerBallTrack(processed.url || processed.analysis_url)
         .then((ballTrack) => {
           const yoloLoaded = applyServerBallTrack(ballTrack, "YOLO auto");
           setEngineStatus(yoloLoaded ? "Ball detector active" : "Ball detector pending");
@@ -1153,6 +1154,16 @@ async function runAnalysis(file) {
     }
   }
   await minimumWait;
+  if (ballTrackPromise) {
+    // Wait for server ball detection to finish before showing the result, so
+    // the ball is already drawn when the video appears instead of popping in
+    // ~10s later. Capped so a slow/stuck server can't hang the analysis; if it
+    // times out the result still shows and the ball fills in when it arrives.
+    clearInterval(timer);
+    nodes.progressBar.style.width = "92%";
+    nodes.analysisMessage.textContent = state.language === "en" ? "Detecting ball…" : "ボール検出中…";
+    await withTimeout(ballTrackPromise, 25000, null);
+  }
   clearInterval(timer);
   nodes.progressBar.style.width = "100%";
   renderMetricCard();
