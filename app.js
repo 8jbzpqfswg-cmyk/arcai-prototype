@@ -62,6 +62,7 @@ const state = {
   ballTrail: [],
   importedBallTrail: [],
   importedBallSource: "",
+  importedBallServerSize: null,
   lastBallTime: -1,
   ballStatus: "pending",
   rim: null,
@@ -814,6 +815,7 @@ function setVideo(file) {
   state.ballManualIndex = 0;
   state.ballTrail = [];
   state.importedBallTrail = [];
+  state.importedBallServerSize = null;
   state.importedBallSource = "";
   state.lastBallTime = -1;
   state.ballStatus = "pending";
@@ -865,6 +867,7 @@ function setTranscodedVideo(url, originalName) {
   state.ballManualIndex = 0;
   state.ballTrail = [];
   state.importedBallTrail = [];
+  state.importedBallServerSize = null;
   state.importedBallSource = "";
   state.lastBallTime = -1;
   state.ballStatus = "pending";
@@ -1640,6 +1643,16 @@ function peakInWindow(items, key, tCenter, before, after) {
   return best;
 }
 
+// 3-point moving average of a per-impulse value, returned as {time, val}. Used
+// to stabilize peak timing at 30fps, where raw frame-to-frame velocity is jumpy.
+function smoothKey(items, key) {
+  return items.map((item, index) => {
+    const a = items[Math.max(0, index - 1)][key];
+    const c = items[Math.min(items.length - 1, index + 1)][key];
+    return { time: item.time, val: (a + item[key] + c) / 3 };
+  });
+}
+
 // Upward acceleration of the center-of-mass proxy (hip midpoint) over time.
 // Newton's f = m·a means upward COM acceleration stands in for upward ground
 // reaction force. hipY is normalized (y increases downward), so upward accel is
@@ -1810,19 +1823,21 @@ function computePoseMetrics(samples) {
   // can't be mistaken for the shot. Each gap is gated to 未確定 unless its inputs
   // are clearly tracked, so a poorly-framed clip never yields a fabricated
   // number. The GRF proxy is a 2nd derivative (noisiest at 30fps).
-  const kneeExtPeak = pickPeak(impulses, "kneeExt");
-  const elbowExtPeak = peakInWindow(impulses, "elbowExt", kneeExtPeak.time, 0.1, 0.4);
+  // Smooth the velocity series before peak-picking so the event timestamps
+  // don't jump a frame or two between analyses (30fps noise).
+  const kneeExtPeak = pickPeak(smoothKey(impulses, "kneeExt"), "val");
+  const elbowExtPeak = peakInWindow(smoothKey(impulses, "elbowExt"), "val", kneeExtPeak.time, 0.1, 0.4);
   const elbowTrackedCount = impulses.reduce((sum, item) => sum + item.elbowValid, 0);
   const enoughElbow = elbowTrackedCount >= Math.max(4, Math.round(impulses.length * 0.5));
 
-  if (elbowExtPeak && enoughElbow && kneeExtPeak.kneeExt > 40 && elbowExtPeak.elbowExt > 40) {
+  if (elbowExtPeak && enoughElbow && kneeExtPeak.val > 40 && elbowExtPeak.val > 40) {
     const legToArmMs = (elbowExtPeak.time - kneeExtPeak.time) * 1000;
     metrics.lower_to_upper_ms = legToArmMs > -300 && legToArmMs < 500 ? roundMetric(legToArmMs, 0) : null;
   }
 
   const comAccel = comUpwardAccelSeries(stableSamples);
   const grfPeak = comAccel.length ? peakInWindow(comAccel, "accUp", kneeExtPeak.time, 0.3, 0.06) : null;
-  if (grfPeak && grfPeak.accUp > 0 && kneeExtPeak.kneeExt > 40) {
+  if (grfPeak && grfPeak.accUp > 0 && kneeExtPeak.val > 40) {
     const forceToLegMs = (kneeExtPeak.time - grfPeak.time) * 1000;
     metrics.grf_to_lower_ms = forceToLegMs > -100 && forceToLegMs < 400 ? roundMetric(forceToLegMs, 0) : null;
   }
@@ -2294,8 +2309,8 @@ function coerceBallTrackRow(row) {
 
 function setImportedBallRows(rows, sourceName = "YOLO") {
   const normalizedRows = rows.map(coerceBallTrackRow).filter(Boolean);
-  const videoWidth = nodes.sourceVideo.videoWidth || 1;
-  const videoHeight = nodes.sourceVideo.videoHeight || 1;
+  const videoWidth = nodes.sourceVideo.videoWidth || state.importedBallServerSize?.width || 1;
+  const videoHeight = nodes.sourceVideo.videoHeight || state.importedBallServerSize?.height || 1;
   const validRows = normalizedRows.filter((row) => {
     const x = row.x <= 1 ? row.x * videoWidth : row.x;
     const y = row.y <= 1 ? row.y * videoHeight : row.y;
@@ -2338,6 +2353,9 @@ function applyServerBallTrack(ballTrack, sourceName = "YOLO auto") {
     restartCanvas();
     return false;
   }
+  const sw = Number(ballTrack?.video?.width);
+  const sh = Number(ballTrack?.video?.height);
+  state.importedBallServerSize = sw > 1 && sh > 1 ? { width: sw, height: sh } : null;
   setImportedBallRows(rows, sourceName);
   state.ballStatus = state.importedBallTrail.length >= 3 ? "server_yolo_loaded" : "server_yolo_failed";
   state.importedBallSource = `${sourceName}: ${state.importedBallTrail.length}/${ballTrack.track_points || rows.length}`;
@@ -2347,9 +2365,13 @@ function applyServerBallTrack(ballTrack, sourceName = "YOLO auto") {
 }
 
 function importedBallTrailPoints() {
-  if (state.importedBallTrail.length < 3 || !decodedVideoIsUsable()) return [];
-  const videoWidth = nodes.sourceVideo.videoWidth || 1;
-  const videoHeight = nodes.sourceVideo.videoHeight || 1;
+  const videoWidth = nodes.sourceVideo.videoWidth || state.importedBallServerSize?.width || 0;
+  const videoHeight = nodes.sourceVideo.videoHeight || state.importedBallServerSize?.height || 0;
+  // Draw as soon as the trail is loaded: coordinates normalize against the
+  // server-reported video size, so we no longer wait for the decoded video's
+  // dimensions (on iOS those stay 0 until the user interacts, which is why the
+  // ball used to appear only after zooming in and out).
+  if (state.importedBallTrail.length < 3 || videoWidth < 1 || videoHeight < 1) return [];
   const duration = Number.isFinite(nodes.sourceVideo.duration) ? nodes.sourceVideo.duration : null;
   const frames = state.importedBallTrail.map((item) => item.frame).filter(Number.isFinite);
   const maxFrame = frames.length ? Math.max(...frames) : 0;
