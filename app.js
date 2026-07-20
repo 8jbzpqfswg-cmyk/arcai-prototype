@@ -2896,6 +2896,28 @@ function drawBallTrail(ctx, rect, scale) {
   if (!currentBall) return;
 
   ctx.save();
+
+  // Short fading tail: the path the ball has just travelled, so the arc builds
+  // up as playback advances. Only the last ~0.6s is drawn, never the whole arc
+  // at once (playback still shows the time-changing ball position).
+  const now = currentBall.time;
+  const tailSeconds = 0.6;
+  const tail = visibleTrail
+    .filter((item) => Number.isFinite(item.time) && item.time <= now && item.time >= now - tailSeconds)
+    .sort((a, b) => a.time - b.time);
+  ctx.lineCap = "round";
+  for (let i = 1; i < tail.length; i += 1) {
+    const a = mapNormalizedPoint(tail[i - 1].normalized, rect);
+    const b = mapNormalizedPoint(tail[i].normalized, rect);
+    const age = clamp((now - tail[i].time) / tailSeconds, 0, 1);
+    ctx.strokeStyle = `rgba(255, 196, 0, ${clamp(0.5 * (1 - age), 0, 0.5)})`;
+    ctx.lineWidth = clamp(2.4 * (1 - age), 0.8, 2.4) * scale;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
   const p = mapNormalizedPoint(currentBall.normalized, rect);
   const alpha = currentBall.source === "display_interpolation" ? 0.72 : 0.94;
   ctx.shadowColor = `rgba(255, 196, 0, ${alpha * 0.7})`;
