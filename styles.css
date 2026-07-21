@@ -588,6 +588,28 @@ button {
   color: var(--muted);
 }
 
+.orig-id {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.orig-eyebrow {
+  flex: none;
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#videoName {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+
 .panel-actions {
   display: flex;
   align-items: center;
@@ -710,6 +732,92 @@ button {
   border-color: rgba(116, 201, 76, 0.34);
   background: rgba(116, 201, 76, 0.11);
   color: #3f8a2f;
+}
+
+/* Clean control strip (status + optional rim) */
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+}
+
+.ctrl-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.ctrl-chk.on {
+  color: var(--sumi);
+}
+
+.ctrl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  font-size: 0.66rem;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+}
+
+.ctrl-badge.ok {
+  color: #3f8a2f;
+  background: rgba(116, 201, 76, 0.13);
+}
+
+.ctrl-badge.wait {
+  color: var(--muted);
+  background: var(--paper-soft);
+}
+
+.ctrl-badge .dot {
+  width: 0.34rem;
+  height: 0.34rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ctrl-rim {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--pink);
+  background: transparent;
+  border: 1px solid rgba(255, 47, 146, 0.34);
+  border-radius: 999px;
+  padding: 0.28rem 0.66rem;
+  cursor: pointer;
+}
+
+.ctrl-rim.set {
+  color: #3f8a2f;
+  border-color: rgba(116, 201, 76, 0.4);
+}
+
+.ctrl-rim .opt {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.56rem;
+}
+
+.ctrl-rim:focus-visible {
+  outline: 2px solid var(--pink);
+  outline-offset: 2px;
+}
+
+.ctrl-hint {
+  margin-top: 0.4rem;
+  font-size: 0.63rem;
+  line-height: 1.3;
+  color: var(--muted);
 }
 
 .video-box,

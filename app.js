@@ -620,63 +620,47 @@ function renderCalibrationGuide() {
 renderCalibrationGuide = function renderCalibrationGuide() {
   if (!nodes.calibrationGuide) return;
   const hasVideo = decodedVideoIsUsable();
+  if (!hasVideo) {
+    nodes.calibrationGuide.innerHTML = "";
+    return;
+  }
   const rimDone = Boolean(state.rim?.center && state.rim?.radiusX);
-  const autoBallDone = state.importedBallTrail.length >= 3;
-  const manualDone = state.ballTrail.length >= 1;
+  const ballDone = state.importedBallTrail.length >= 3;
   const ja = state.language === "ja";
-  const copy = ja
+  const c = ja
     ? {
-        title: "次の作業",
-        video: "動画読込",
-        rim: "リング設定",
-        autoBall: "自動ボール検出",
-        manualBall: "手動補助",
-        nextVideo: "まず動画が表示されるまで待ってください。",
-        nextRim: "次はリング設定です。リング中心をタップし、その後リング端をタップしてください。",
-        nextAutoBall: "ボールはアップロード時に自動検出します。検出できない場合のみ手動補助を使います。",
-        readyAutoBall: "自動ボール検出を読み込み済みです。ArcAI Viewで軌跡と数値を確認してください。",
-        optional: "任意"
+        done: "解析完了",
+        detecting: "ボール検出中…",
+        ball: "ボール",
+        pose: "姿勢",
+        setRim: "リングを設定",
+        rimSet: "リング設定済み",
+        optional: "任意",
+        hint: "リングを合わせると、アーチ高・リリース高・入射角も出せます。"
       }
     : {
-        title: "Next step",
-        video: "Video",
-        rim: "Rim",
-        autoBall: "Auto ball detection",
-        manualBall: "Manual assist",
-        nextVideo: "Wait until the uploaded video is visible.",
-        nextRim: "Set the rim: tap the rim center, then tap the rim edge.",
-        nextAutoBall: "ArcAI detects the ball automatically during upload. Use manual assist only if detection fails.",
-        readyAutoBall: "Auto ball detection is loaded. Review the trail and values in ArcAI View.",
-        optional: "Optional"
+        done: "Analysis ready",
+        detecting: "Detecting ball…",
+        ball: "Ball",
+        pose: "Pose",
+        setRim: "Set rim",
+        rimSet: "Rim set",
+        optional: "optional",
+        hint: "Set the rim to also get arc height, release height and entry angle."
       };
 
-  const nextText = !hasVideo
-    ? copy.nextVideo
-    : !rimDone
-      ? copy.nextRim
-      : !autoBallDone
-        ? copy.nextAutoBall
-        : copy.readyAutoBall;
-  const steps = [
-    { label: copy.video, done: hasVideo, current: !hasVideo },
-    { label: copy.rim, done: rimDone, current: hasVideo && !rimDone },
-    { label: copy.autoBall, done: autoBallDone, current: hasVideo && rimDone && !autoBallDone },
-    { label: `${copy.manualBall} ${copy.optional}`, done: manualDone, current: false }
-  ];
+  const badge = ballDone
+    ? `<span class="ctrl-badge ok"><span class="dot"></span>${c.done}</span>`
+    : `<span class="ctrl-badge wait">${c.detecting}</span>`;
 
   nodes.calibrationGuide.innerHTML = `
-    <div class="guide-head">
-      <strong>${copy.title}</strong>
-      <span>${nextText}</span>
+    <div class="ctrl-row">
+      <span class="ctrl-chk ${ballDone ? "on" : ""}">${ballDone ? "✓" : "…"} ${c.ball}</span>
+      <span class="ctrl-chk on">✓ ${c.pose}</span>
+      ${badge}
+      <button class="ctrl-rim ${rimDone ? "set" : ""}" type="button" data-action="rim">${rimDone ? c.rimSet : c.setRim} <span class="opt">${c.optional}</span></button>
     </div>
-    <div class="guide-steps">
-      ${steps
-        .map(
-          (step) =>
-            `<span class="${step.done ? "done" : ""} ${step.current ? "current" : ""}">${step.done ? "✓ " : ""}${step.label}</span>`
-        )
-        .join("")}
-    </div>
+    ${rimDone ? "" : `<div class="ctrl-hint">${c.hint}</div>`}
   `;
 };
 
