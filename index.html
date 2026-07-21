@@ -79,11 +79,12 @@
 
           <article class="video-panel original-panel">
             <div class="panel-title">
-              <span data-i18n="originalLabel">Original</span>
-              <div class="panel-actions">
+              <div class="orig-id">
+                <span class="orig-eyebrow" data-i18n="originalLabel">Original</span>
                 <span id="videoName">Demo profile</span>
-                <button class="inline-action" type="button" data-action="rim" data-i18n="setRim">Set Rim</button>
-                <button class="inline-action ghost" type="button" data-action="ball" data-i18n="setBall">Set Ball</button>
+              </div>
+              <div class="panel-actions">
+                <button class="inline-action ghost hidden" type="button" data-action="ball" data-i18n="setBall">Set Ball</button>
                 <label class="inline-action ghost hidden" for="yoloCsvInput" data-i18n="loadYoloCsv">YOLO CSV</label>
                 <input id="yoloCsvInput" type="file" accept=".csv,text/csv" hidden />
               </div>
