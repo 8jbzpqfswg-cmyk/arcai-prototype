@@ -79,6 +79,7 @@ const POSE_METRIC_KEYS = new Set([
   "dip_depth_pct",
   "set_point_height_m",
   "wrist_height_pct",
+  "hand_speed_peak_mps",
   "knee_range_deg",
   "hip_range_deg",
   "trunk_lean_deg",
@@ -134,6 +135,7 @@ const baseAnalysis = {
     dip_depth_pct: null,
     set_point_height_m: null,
     wrist_height_pct: null,
+    hand_speed_peak_mps: null,
     knee_range_deg: null,
     hip_range_deg: null,
     trunk_lean_deg: null,
@@ -282,6 +284,7 @@ const tabContent = {
     rows: [
       ["dip_depth_pct", "Dip depth", (m) => formatMetric(m.dip_depth_pct, "% height")],
       ["wrist_height_pct", "Wrist height", (m) => formatMetric(m.wrist_height_pct, "% height")],
+      ["hand_speed_peak_mps", "Hand speed peak (3D)", (m) => formatMetric(m.hand_speed_peak_mps, "m/s")],
       ["knee_range_deg", "Knee range", (m) => formatMetric(m.knee_range_deg, "deg")],
       ["trunk_lean_deg", "Trunk lean", (m) => formatMetric(m.trunk_lean_deg, "deg")]
     ],
@@ -336,6 +339,7 @@ const tabContentJa = {
     labels: {
       dip_depth_pct: "Dipの深さ",
       wrist_height_pct: "手首の最高位置",
+      hand_speed_peak_mps: "手首スピード最大 (m/s, 3D)",
       knee_range_deg: "膝関節の運動幅",
       trunk_lean_deg: "体幹傾斜"
     },
@@ -1718,7 +1722,7 @@ function selectPoseSide(landmarks) {
   );
 }
 
-function makePoseSample(landmarks) {
+function makePoseSample(landmarks, worldLandmarks) {
   const video = nodes.sourceVideo;
   const time = Number.isFinite(video.currentTime) ? video.currentTime : performance.now() / 1000;
   const selected = selectPoseSide(landmarks);
@@ -1747,9 +1751,17 @@ function makePoseSample(landmarks) {
   const trunkDy = Math.max(0.001, hipMid.y - shoulderMid.y);
   const trunkLeanDeg = Math.abs((Math.atan2(shoulderMid.x - hipMid.x, trunkDy) * 180) / Math.PI);
 
+  // 3D wrist position (meters, hip-centered) from MediaPipe world landmarks —
+  // lets us derive a real hand speed in m/s, which 2D pixels cannot give.
+  const worldWrist = worldLandmarks?.[selected.indices.wrist];
+  const wristWorld = worldWrist && Number.isFinite(worldWrist.x)
+    ? { x: worldWrist.x, y: worldWrist.y, z: worldWrist.z ?? 0 }
+    : null;
+
   return {
     time,
     side: selected.side,
+    wristWorld,
     bodyHeight,
     floorY,
     footX,
@@ -1790,6 +1802,22 @@ function computePoseMetrics(samples) {
         : null,
     landing_drift_pct: footDriftPct <= 50 ? roundMetric(footDriftPct, 1) : null
   };
+
+  // Peak hand speed (m/s) from 3D world landmarks (metric; 2D pixels can't give
+  // a real speed). Central difference over neighbours smooths single-frame jitter.
+  let handSpeedPeak = 0;
+  let handSpeedCount = 0;
+  for (let index = 1; index < stableSamples.length - 1; index += 1) {
+    const a = stableSamples[index - 1].wristWorld;
+    const c = stableSamples[index + 1].wristWorld;
+    const dt = stableSamples[index + 1].time - stableSamples[index - 1].time;
+    if (!a || !c || dt <= 0.01 || dt > 0.4) continue;
+    handSpeedCount += 1;
+    const v = Math.hypot(c.x - a.x, c.y - a.y, c.z - a.z) / dt;
+    if (v > handSpeedPeak) handSpeedPeak = v;
+  }
+  metrics.hand_speed_peak_mps =
+    handSpeedCount >= 8 && handSpeedPeak >= 1 && handSpeedPeak <= 20 ? roundMetric(handSpeedPeak, 1) : null;
 
   const span = stableSamples[stableSamples.length - 1].time - stableSamples[0].time;
   if (stableSamples.length < 8 || span < 0.35) return metrics;
@@ -1912,8 +1940,8 @@ function holdPoseMetrics() {
   saveAnalysisSnapshot();
 }
 
-function appendPoseSample(landmarks) {
-  const sample = makePoseSample(landmarks);
+function appendPoseSample(landmarks, worldLandmarks) {
+  const sample = makePoseSample(landmarks, worldLandmarks);
   if (!sample) return;
   if (state.lastPoseSampleTime >= 0 && sample.time + 0.08 < state.lastPoseSampleTime) {
     holdPoseMetrics();
@@ -3110,7 +3138,7 @@ function drawCanvas() {
     const result = detectPoseForCurrentFrame();
     landmarks = result?.landmarks?.[0];
     if (landmarks?.length) {
-      appendPoseSample(landmarks);
+      appendPoseSample(landmarks, result?.worldLandmarks?.[0]);
       if (state.activeView === "body" || state.activeView === "compare") {
         renderRect = fitPoseZoomRect(landmarks, width, height);
       }
