@@ -27,7 +27,7 @@ const savedPlaybackRate = Number(localStorage.getItem("arcai:playback-rate"));
 const state = {
   screen: "home",
   language: savedLanguage === "en" ? "en" : "ja",
-  playbackRate: [0.25, 0.5, 1].includes(savedPlaybackRate) ? savedPlaybackRate : 1,
+  playbackRate: [0.25, 0.5, 0.75, 1].includes(savedPlaybackRate) ? savedPlaybackRate : 1,
   activeMetricKey: null,
   selectedFile: null,
   selectedUrl: "",
@@ -717,6 +717,26 @@ function applyPlaybackRate() {
   nodes.sourceVideo.playbackRate = state.playbackRate;
   document.querySelectorAll("[data-speed]").forEach((button) => {
     button.classList.toggle("active", Number(button.dataset.speed) === state.playbackRate);
+  });
+  const label = state.playbackRate === 1 ? "1x" : `${state.playbackRate}x`;
+  document.querySelectorAll(".speed-current").forEach((el) => {
+    el.textContent = label;
+  });
+}
+
+function closeSpeedMenus() {
+  document.querySelectorAll(".speed-popup").forEach((el) => el.classList.add("hidden"));
+  document.querySelectorAll(".speed-toggle").forEach((el) => el.setAttribute("aria-expanded", "false"));
+}
+
+function syncTransportButton() {
+  const paused = nodes.sourceVideo.paused || nodes.sourceVideo.ended;
+  document.querySelectorAll("[data-action='playpause']").forEach((btn) => {
+    const icon = btn.querySelector(".tp-icon");
+    const label = btn.querySelector(".tp-label");
+    if (icon) icon.textContent = paused ? "▶" : "❚❚";
+    if (label) label.textContent = paused ? "再生" : "一時停止";
+    btn.classList.toggle("playing", !paused);
   });
 }
 
@@ -3944,6 +3964,9 @@ function bindEvents() {
 
   nodes.sourceVideo.addEventListener("loadedmetadata", renderCalibrationGuide);
   nodes.sourceVideo.addEventListener("canplay", renderCalibrationGuide);
+  nodes.sourceVideo.addEventListener("play", syncTransportButton);
+  nodes.sourceVideo.addEventListener("pause", syncTransportButton);
+  nodes.sourceVideo.addEventListener("ended", syncTransportButton);
   nodes.sourceVideo.addEventListener("loadeddata", clearVideoIssueIfReady);
   nodes.sourceVideo.addEventListener("canplay", clearVideoIssueIfReady);
 
@@ -3953,6 +3976,21 @@ function bindEvents() {
     if (actionTarget?.dataset.action === "home") showScreen("home");
     if (actionTarget?.dataset.action === "rim") startRimPicking();
     if (actionTarget?.dataset.action === "ball") startBallPicking();
+    if (actionTarget?.dataset.action === "playpause") {
+      if (nodes.sourceVideo.paused || nodes.sourceVideo.ended) nodes.sourceVideo.play().catch(() => {});
+      else nodes.sourceVideo.pause();
+    }
+    if (actionTarget?.dataset.action === "speed-menu") {
+      const popup = actionTarget.parentElement.querySelector(".speed-popup");
+      const willOpen = popup?.classList.contains("hidden");
+      closeSpeedMenus();
+      if (popup && willOpen) {
+        popup.classList.remove("hidden");
+        actionTarget.setAttribute("aria-expanded", "true");
+      }
+    } else if (!event.target.closest(".speed-popup")) {
+      closeSpeedMenus();
+    }
 
     const langTarget = event.target.closest("[data-lang]");
     if (langTarget) {
@@ -3966,6 +4004,7 @@ function bindEvents() {
       state.playbackRate = Number(speedTarget.dataset.speed);
       localStorage.setItem("arcai:playback-rate", String(state.playbackRate));
       applyPlaybackRate();
+      closeSpeedMenus();
     }
 
     const tabTarget = event.target.closest("[data-tab]");
@@ -4017,5 +4056,6 @@ function bindEvents() {
 applyLanguage();
 applyPlaybackRate();
 bindEvents();
+syncTransportButton();
 splash();
 drawCanvas();
