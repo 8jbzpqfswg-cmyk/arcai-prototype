@@ -2811,13 +2811,41 @@ function drawCourtGuide(ctx, rect, floorY, scale) {
 // pole/paint on the LEFT, center line on the RIGHT) matching a right→left shot.
 // Registered so the free-throw stand point sits at the athlete's feet and the
 // court scales to the athlete's real height (so it bleeds off-frame naturally).
+// Estimate the shot distance (metres from basket) so the athlete stands at the
+// real spot on the court. We assume a 3-point attempt (the app's main use case),
+// and refine from the ball's horizontal travel when the trajectory is solid.
+// Falls back to the 3-point radius rather than showing a shaky number.
+function estimateShotDistanceMeters() {
+  const fallback = COURT3D.TPT_R; // 6.75 m — assume a 3-pointer
+  const sample = state.poseSamples[state.poseSamples.length - 1];
+  const video = nodes.sourceVideo;
+  const trail = (state.importedBallTrail.length >= state.ballTrail.length ? state.importedBallTrail : state.ballTrail)
+    .filter((item) => item?.normalized && Number.isFinite(item.normalized.x));
+  if (!sample || trail.length < 5 || !video.videoWidth || !video.videoHeight) return fallback;
+  const xs = trail.map((item) => item.normalized.x);
+  const spanNormX = Math.max(...xs) - Math.min(...xs);
+  if (spanNormX < 0.12) return fallback; // trajectory too short to trust
+  // Athlete height in metres from world landmarks (feet→head), else assume 1.72 m.
+  let athleteM = 1.72;
+  const W = state.lastWorldLandmarks;
+  if (W && W.length >= 33) {
+    const ys = [0, 27, 28, 29, 30, 31, 32].map((i) => W[i]?.y).filter(Number.isFinite);
+    if (ys.length >= 3) athleteM = clamp(Math.max(...ys) - Math.min(...ys) + 0.12, 1.4, 2.1);
+  }
+  const pxPerM = (sample.bodyHeight * video.videoHeight) / athleteM;
+  if (!(pxPerM > 1)) return fallback;
+  const spanPx = spanNormX * video.videoWidth;
+  const distance = spanPx / pxPerM;
+  return clamp(distance, 3.5, 9.5);
+}
+
 const SIDE_COURT_CAM = { az: -90, el: 3, dist: 19, target: [0, 1.4, 6], k: 0.9 };
 function drawSideCourt2D(ctx, rect, scale) {
   const sample = state.poseSamples[state.poseSamples.length - 1];
   const C = COURT3D;
   const view = cam3dMatrix(SIDE_COURT_CAM.az, SIDE_COURT_CAM.el, SIDE_COURT_CAM.dist, SIDE_COURT_CAM.target);
   // Frame the court to the rect (like the validated preview) then shift so the
-  // free-throw stand point lands under the athlete's feet on the floor line.
+  // athlete's on-court stand point lands under their feet on the floor line.
   // Side-on court spreads along screen-x, so tie focal to rect width for a
   // consistent framing across portrait/landscape videos.
   const focal = rect.width * SIDE_COURT_CAM.k;
@@ -2827,7 +2855,9 @@ function drawSideCourt2D(ctx, rect, scale) {
   const footNorm = Number.isFinite(anchor?.footX) ? anchor.footX : 0.5;
   const anchorX = clamp(rect.x + footNorm * rect.width, rect.x + rect.width * 0.3, rect.x + rect.width * 0.7);
   const anchorY = courtFloorY(rect);
-  const stand = proj3d([0, 0, C.FT_Z], view, cx, cy, focal);
+  // Athlete stands at the estimated shot spot (behind the arc for a 3-pointer).
+  const shotZ = C.BASKET_Z + estimateShotDistanceMeters();
+  const stand = proj3d([0, 0, shotZ], view, cx, cy, focal);
   const dx = anchorX - stand.x;
   const dy = anchorY - stand.y;
   const PS = (P) => {
@@ -3035,7 +3065,7 @@ function drawBallTrail(ctx, rect, scale) {
   ctx.restore();
 }
 
-function drawCourtAndForceProxy(ctx, rect, scale) {
+function drawCourtAndForceProxy(ctx, rect, scale, landmarks = null) {
   const sample = state.poseSamples[state.poseSamples.length - 1];
   const floorY = courtFloorY(rect);
 
@@ -3054,8 +3084,6 @@ function drawCourtAndForceProxy(ctx, rect, scale) {
     return;
   }
 
-  const anchor = forceAnchorSample(sample);
-  const footX = clamp(rect.x + anchor.footX * rect.width, rect.x + 10, rect.x + rect.width - 10);
   const currentProxy = currentLowerImpulseProxy(sample);
   const peakProxy = lowerImpulseProxyPeak();
   if (!Number.isFinite(currentProxy) || !Number.isFinite(peakProxy) || peakProxy <= 0 || currentProxy <= 0) {
@@ -3067,14 +3095,54 @@ function drawCourtAndForceProxy(ctx, rect, scale) {
     ctx.restore();
     return;
   }
+
+  // Ground-reaction force acts on the athlete's base of support: the footprint
+  // between the feet. Draw it there — the arrow rises from the centre of
+  // pressure (under the centre of mass), inside the support base.
+  const visible = (index) =>
+    landmarks?.[index] && (landmarks[index].visibility === undefined || landmarks[index].visibility > 0.3);
+  const footIndices = [27, 28, 29, 30, 31, 32].filter(visible);
+  let baseCenterX;
+  let baseY;
+  let bosHalfW;
+  let copX;
+  if (state.activeView === "full" && landmarks && footIndices.length >= 2) {
+    const feet = footIndices.map((index) => mapLandmark(landmarks[index], rect));
+    const minX = Math.min(...feet.map((p) => p.x));
+    const maxX = Math.max(...feet.map((p) => p.x));
+    baseCenterX = (minX + maxX) / 2;
+    baseY = Math.max(...feet.map((p) => p.y)); // lowest foot point = floor contact
+    bosHalfW = Math.max(16 * scale, (maxX - minX) / 2 + 9 * scale);
+    const hips = [23, 24].filter(visible).map((index) => mapLandmark(landmarks[index], rect));
+    const comX = hips.length ? hips.reduce((sum, p) => sum + p.x, 0) / hips.length : baseCenterX;
+    copX = clamp(comX, minX, maxX);
+  } else {
+    const anchor = forceAnchorSample(sample);
+    baseCenterX = clamp(rect.x + anchor.footX * rect.width, rect.x + 10, rect.x + rect.width - 10);
+    baseY = floorY;
+    bosHalfW = 22 * scale;
+    copX = baseCenterX;
+  }
   const arrowSize = clamp(rect.height * 0.24 * relativeProxy, 18 * scale, 92 * scale);
 
-  ctx.strokeStyle = "rgba(255, 196, 0, .88)";
-  ctx.fillStyle = "rgba(255, 196, 0, .88)";
+  // base of support footprint
+  ctx.fillStyle = "rgba(255, 196, 0, .16)";
+  ctx.beginPath();
+  ctx.ellipse(baseCenterX, baseY + 3 * scale, bosHalfW, 5 * scale, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255, 196, 0, .4)";
+  ctx.lineWidth = 1 * scale;
+  ctx.beginPath();
+  ctx.ellipse(baseCenterX, baseY + 3 * scale, bosHalfW, 5 * scale, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // GRF arrow rising from the centre of pressure
+  ctx.strokeStyle = "rgba(255, 196, 0, .9)";
+  ctx.fillStyle = "rgba(255, 196, 0, .9)";
   ctx.lineWidth = 3.2 * scale;
-  const from = point(footX, floorY + 2);
-  const to = point(footX, floorY - arrowSize);
-  ctx.shadowColor = "rgba(255, 196, 0, .62)";
+  const from = point(copX, baseY + 2);
+  const to = point(copX, baseY - arrowSize);
+  ctx.shadowColor = "rgba(255, 196, 0, .6)";
   ctx.shadowBlur = 8 * scale;
   ctx.beginPath();
   ctx.moveTo(from.x, from.y);
@@ -3088,15 +3156,10 @@ function drawCourtAndForceProxy(ctx, rect, scale) {
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  ctx.fillStyle = "rgba(255, 196, 0, .18)";
-  ctx.beginPath();
-  ctx.ellipse(footX, floorY + 3 * scale, 22 * scale, 4.8 * scale, 0, 0, Math.PI * 2);
-  ctx.fill();
-
   ctx.font = "800 10px Inter, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,.58)";
-  const labelX = clamp(footX + 8, rect.x + 10, rect.x + rect.width - 118);
-  ctx.fillText(`relative vGRF proxy ${Math.round(relativeProxy * 100)}%`, labelX, Math.max(rect.y + 22, to.y - 6));
+  const labelX = clamp(copX + 8, rect.x + 10, rect.x + rect.width - 118);
+  ctx.fillText(`vGRF proxy ${Math.round(relativeProxy * 100)}%`, labelX, Math.max(rect.y + 22, to.y - 6));
   ctx.restore();
 }
 
@@ -3107,6 +3170,8 @@ function drawPoseLandmarks(ctx, landmarks, rect, scale, view = state.activeView)
   };
   const zoomBoost = view === "body" || view === "compare" ? 1.34 : 1;
   const dotBoost = view === "body" || view === "compare" ? 1.42 : 1;
+  // Full view uses the same simple white/grey styling as the 3D avatar.
+  const mono = view === "full";
 
   ctx.save();
   ctx.lineCap = "round";
@@ -3115,6 +3180,23 @@ function drawPoseLandmarks(ctx, landmarks, rect, scale, view = state.activeView)
     if (!visible(from) || !visible(to)) return;
     const a = mapLandmark(landmarks[from], rect);
     const b = mapLandmark(landmarks[to], rect);
+    if (mono) {
+      // Grey under-stroke + white core for a clean, tubular look.
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "rgba(70,70,74,.9)";
+      ctx.lineWidth = 3.4 * scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(236,232,232,.95)";
+      ctx.lineWidth = 1.5 * scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      return;
+    }
     const isArm = [13, 14, 15, 16, 19, 20, 21, 22].includes(from) || [13, 14, 15, 16, 19, 20, 21, 22].includes(to);
     const isLeg = [25, 26, 27, 28, 29, 30, 31, 32].includes(from) || [25, 26, 27, 28, 29, 30, 31, 32].includes(to);
     ctx.strokeStyle = isArm ? "rgba(255, 152, 40, .9)" : isLeg ? "rgba(76, 211, 194, .9)" : "rgba(247, 243, 234, .78)";
@@ -3126,10 +3208,16 @@ function drawPoseLandmarks(ctx, landmarks, rect, scale, view = state.activeView)
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
   });
+  ctx.shadowBlur = 0;
 
   landmarks.forEach((landmark, index) => {
     if (landmark.visibility !== undefined && landmark.visibility < 0.35) return;
     const p = mapLandmark(landmark, rect);
+    if (mono) {
+      if (![11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28].includes(index)) return;
+      dot(ctx, p, 1.9 * scale, "#f4f4f7");
+      return;
+    }
     const isWrist = index === 15 || index === 16;
     const isShoulderHip = [11, 12, 23, 24].includes(index);
     const color = isWrist ? "#ffc400" : isShoulderHip ? "#fff0b8" : "#dff8ff";
@@ -3553,12 +3641,12 @@ function drawCanvas() {
         renderRect = fitPoseZoomRect(landmarks, width, height);
       }
       if (state.activeView === "full") {
-        drawCourtAndForceProxy(ctx, rect, scale);
+        drawCourtAndForceProxy(ctx, rect, scale, landmarks);
         drawVirtualRimScene(ctx, rect, scale);
         detectBallCandidate(rect, landmarks);
         drawBallTrail(ctx, rect, scale);
       } else {
-        drawCourtAndForceProxy(ctx, rect, scale);
+        drawCourtAndForceProxy(ctx, rect, scale, landmarks);
       }
       drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
       if (state.activeView === "compare") drawComparePanel(ctx, width, height);
