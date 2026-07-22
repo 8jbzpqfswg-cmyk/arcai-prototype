@@ -2820,6 +2820,16 @@ function estimateShotDistanceMeters() {
   const fallback = COURT3D.TPT_R; // 6.75 m — assume a 3-pointer
   const sample = state.poseSamples[state.poseSamples.length - 1];
   const video = nodes.sourceVideo;
+  // Best signal: a calibrated rim gives real scale (rim radius = 0.225 m), and the
+  // horizontal image gap between the rim and the athlete's feet is the shot distance.
+  if (state.rim?.center && state.rim?.radiusX && sample && Number.isFinite(sample.footX) && video.videoWidth) {
+    const pxPerM = (state.rim.radiusX * video.videoWidth) / COURT3D.RIM_R;
+    if (pxPerM > 1) {
+      const gapPx = Math.abs(sample.footX - state.rim.center.x) * video.videoWidth;
+      const distance = gapPx / pxPerM;
+      if (distance >= 2 && distance <= 11) return clamp(distance, 2.5, 10);
+    }
+  }
   const trail = (state.importedBallTrail.length >= state.ballTrail.length ? state.importedBallTrail : state.ballTrail)
     .filter((item) => item?.normalized && Number.isFinite(item.normalized.x));
   if (!sample || trail.length < 5 || !video.videoWidth || !video.videoHeight) return fallback;
@@ -3454,10 +3464,13 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
-  const view = cam3dMatrix(state.cam3d.az, state.cam3d.el, state.cam3d.dist, [0, 1.2, 5.2]);
+  const C = COURT3D;
+  // Avatar stands at the real shot distance; aim the camera between hoop and athlete.
+  const playerZ = C.BASKET_Z + estimateShotDistanceMeters();
+  const targetZ = clamp((C.BASKET_Z + playerZ) / 2, 3.6, 6.5);
+  const view = cam3dMatrix(state.cam3d.az, state.cam3d.el, state.cam3d.dist, [0, 1.2, targetZ]);
   const focal = 1350 * (height / 900);
   const s = { view, cx: width / 2, cy: height / 2, focal };
-  const C = COURT3D;
   const LINE = "#ece8e8";
 
   ctx.save();
@@ -3530,7 +3543,7 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
       const rz = R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2];
       return [rx, ry, rz];
     }));
-    const playerZ = 4.6;
+    // playerZ (real shot distance from the hoop) computed above with the camera.
     let feet = -Infinity;
     [27, 28, 29, 30, 31, 32].forEach((i) => { if (A[i][1] > feet) feet = A[i][1]; });
     // Avatar now faces -z after faceHoopYaw, so place with +z (hoop is toward -z).
@@ -3655,6 +3668,18 @@ function handleCam3dPointerUp(event) {
   state.cam3dPointers.delete(event.pointerId);
   if (state.cam3dPointers.size < 2) state.cam3dPinchSpan = 0;
   try { nodes.overlayCanvas.releasePointerCapture(event.pointerId); } catch (_) {}
+}
+
+// Mouse-wheel / trackpad zoom (desktop), matching pinch on touch.
+function handleCanvasWheel(event) {
+  if (!viewIsInteractive()) return;
+  event.preventDefault();
+  const factor = Math.exp(-event.deltaY * 0.0015); // wheel up → factor > 1 → zoom in
+  if (state.activeView === "threed") {
+    state.cam3d.dist = clamp(state.cam3d.dist / factor, 7, 30);
+  } else {
+    state.zoom2d.scale = clamp(state.zoom2d.scale * factor, 0.6, 5);
+  }
 }
 
 function drawCanvas() {
@@ -3852,6 +3877,7 @@ function bindEvents() {
   nodes.overlayCanvas.addEventListener("pointermove", handleCam3dPointerMove, { passive: false });
   nodes.overlayCanvas.addEventListener("pointerup", handleCam3dPointerUp);
   nodes.overlayCanvas.addEventListener("pointercancel", handleCam3dPointerUp);
+  nodes.overlayCanvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
   nodes.overlayCanvas.classList.toggle("rotatable", viewIsInteractive());
 
   window.addEventListener("resize", restartCanvas);
