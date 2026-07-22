@@ -36,6 +36,7 @@ const state = {
   activeView: "full",
   cam3d: { az: 40, el: 18, dist: 13 },
   cam3dTouch: null,
+  zoom2d: { scale: 1, panX: 0, panY: 0 },
   lastWorldLandmarks: null,
   analysis: null,
   previousSnapshot: null,
@@ -2839,31 +2840,67 @@ function estimateShotDistanceMeters() {
   return clamp(distance, 3.5, 9.5);
 }
 
+// Which way is the shot going? +1 = hoop on the LEFT (right→left shot),
+// -1 = hoop on the RIGHT (left→right). Derived from the calibrated rim vs the
+// athlete when available, else from the ball's horizontal travel — so it adapts
+// to right/left-handers and either filming direction automatically.
+function courtFacingSign() {
+  const sample = state.poseSamples[state.poseSamples.length - 1];
+  if (state.rim?.center && sample && Number.isFinite(sample.footX)) {
+    return state.rim.center.x <= sample.footX ? 1 : -1;
+  }
+  const trail = (state.importedBallTrail.length >= state.ballTrail.length ? state.importedBallTrail : state.ballTrail)
+    .filter((it) => it?.normalized && Number.isFinite(it.normalized.x) && Number.isFinite(it.time))
+    .sort((a, b) => a.time - b.time);
+  if (trail.length >= 4) {
+    const n = Math.max(2, Math.floor(trail.length / 3));
+    const startX = trail.slice(0, n).reduce((s, it) => s + it.normalized.x, 0) / n;
+    const endX = trail.slice(-n).reduce((s, it) => s + it.normalized.x, 0) / n;
+    if (Math.abs(endX - startX) > 0.04) return endX < startX ? 1 : -1;
+  }
+  return 1;
+}
+
 const SIDE_COURT_CAM = { az: -90, el: 3, dist: 19, target: [0, 1.4, 6], k: 0.9 };
 function drawSideCourt2D(ctx, rect, scale) {
   const sample = state.poseSamples[state.poseSamples.length - 1];
   const C = COURT3D;
-  const view = cam3dMatrix(SIDE_COURT_CAM.az, SIDE_COURT_CAM.el, SIDE_COURT_CAM.dist, SIDE_COURT_CAM.target);
-  // Frame the court to the rect (like the validated preview) then shift so the
-  // athlete's on-court stand point lands under their feet on the floor line.
-  // Side-on court spreads along screen-x, so tie focal to rect width for a
-  // consistent framing across portrait/landscape videos.
-  const focal = rect.width * SIDE_COURT_CAM.k;
-  const cx = rect.x + rect.width * 0.5;
-  const cy = rect.y + rect.height * 0.5;
-  const anchor = sample ? forceAnchorSample(sample) : null;
-  const footNorm = Number.isFinite(anchor?.footX) ? anchor.footX : 0.5;
-  const anchorX = clamp(rect.x + footNorm * rect.width, rect.x + rect.width * 0.3, rect.x + rect.width * 0.7);
-  const anchorY = courtFloorY(rect);
-  // Athlete stands at the estimated shot spot (behind the arc for a 3-pointer).
-  const shotZ = C.BASKET_Z + estimateShotDistanceMeters();
-  const stand = proj3d([0, 0, shotZ], view, cx, cy, focal);
-  const dx = anchorX - stand.x;
-  const dy = anchorY - stand.y;
-  const PS = (P) => {
-    const p = proj3d(P, view, cx, cy, focal);
-    return { x: p.x + dx, y: p.y + dy, depth: p.depth };
-  };
+  const dir = courtFacingSign();
+  const view = cam3dMatrix(SIDE_COURT_CAM.az * dir, SIDE_COURT_CAM.el, SIDE_COURT_CAM.dist, SIDE_COURT_CAM.target);
+  let PS;
+  if (state.rim?.center && state.rim?.radiusX) {
+    // Rim is calibrated: pin the drawn hoop to the tapped rim and use its size as
+    // the real-world scale, so board/pole/court all line up with the set rim.
+    const rimC = mapNormalizedPoint(state.rim.center, rect);
+    const rimRadiusPx = clamp(state.rim.radiusX * rect.width, 5, 90);
+    const pxPerM = rimRadiusPx / C.RIM_R;
+    const focalRef = 1350;
+    const rimRef = proj3d([0, C.RIM_Y, C.BASKET_Z], view, 0, 0, focalRef);
+    const rimUp = proj3d([0, C.RIM_Y + 1, C.BASKET_Z], view, 0, 0, focalRef);
+    const k = pxPerM / Math.max(1, Math.abs(rimUp.y - rimRef.y));
+    PS = (P) => {
+      const p = proj3d(P, view, 0, 0, focalRef);
+      return { x: rimC.x + k * (p.x - rimRef.x), y: rimC.y + k * (p.y - rimRef.y), depth: p.depth };
+    };
+  } else {
+    // No rim set: frame the court to the rect and stand the athlete at the
+    // estimated shot spot (behind the arc for a 3-pointer).
+    const focal = rect.width * SIDE_COURT_CAM.k;
+    const cx = rect.x + rect.width * 0.5;
+    const cy = rect.y + rect.height * 0.5;
+    const anchor = sample ? forceAnchorSample(sample) : null;
+    const footNorm = Number.isFinite(anchor?.footX) ? anchor.footX : 0.5;
+    const anchorX = clamp(rect.x + footNorm * rect.width, rect.x + rect.width * 0.3, rect.x + rect.width * 0.7);
+    const anchorY = courtFloorY(rect);
+    const shotZ = C.BASKET_Z + estimateShotDistanceMeters();
+    const stand = proj3d([0, 0, shotZ], view, cx, cy, focal);
+    const dx = anchorX - stand.x;
+    const dy = anchorY - stand.y;
+    PS = (P) => {
+      const p = proj3d(P, view, cx, cy, focal);
+      return { x: p.x + dx, y: p.y + dy, depth: p.depth };
+    };
+  }
   const stroke = (a, b, col, w) => {
     const pa = PS(a);
     const pb = PS(b);
@@ -3393,6 +3430,22 @@ function alignWorldRotation(W) {
   return R;
 }
 
+// After gravity alignment, spin the avatar about the vertical axis so it faces
+// the hoop (toward -z). Facing is taken from where the head points: nose (0)
+// relative to the ear midpoint (7,8), projected onto the horizontal plane.
+function faceHoopYaw(A) {
+  const nose = A[0];
+  const earMid = [(A[7][0] + A[8][0]) / 2, (A[7][1] + A[8][1]) / 2, (A[7][2] + A[8][2]) / 2];
+  const fx = nose[0] - earMid[0];
+  const fz = nose[2] - earMid[2];
+  if (!Number.isFinite(fx) || Math.hypot(fx, fz) < 1e-6) return A;
+  const theta = Math.PI - Math.atan2(fx, fz); // rotate facing to point toward -z
+  const ct = Math.cos(theta);
+  const st = Math.sin(theta);
+  // Ry: x' = x·cos + z·sin ; z' = -x·sin + z·cos ; y unchanged.
+  return A.map((p) => [p[0] * ct + p[2] * st, p[1], -p[0] * st + p[2] * ct]);
+}
+
 function drawThreeDScene(ctx, width, height, worldLandmarks) {
   // Background gradient (dark court hall).
   const grad = ctx.createLinearGradient(0, 0, 0, height);
@@ -3467,20 +3520,21 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
     line3d(ctx, s, [x, C.RIM_Y, z], [x * 0.5, C.RIM_Y - 0.45, C.BASKET_Z + (z - C.BASKET_Z) * 0.5], "#d2d2d2", 1);
   }
 
-  // Avatar (white/grey), gravity-aligned, placed at the free-throw area facing hoop.
+  // Avatar (white/grey), gravity-aligned, turned to face the hoop, placed on court.
   if (worldLandmarks && worldLandmarks.length >= 33) {
     const W = worldLandmarks.map((p) => [p.x, p.y, p.z ?? 0]);
     const R = alignWorldRotation(W);
-    const A = W.map((p) => {
+    const A = faceHoopYaw(W.map((p) => {
       const rx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2];
       const ry = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2];
       const rz = R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2];
       return [rx, ry, rz];
-    });
+    }));
     const playerZ = 4.6;
     let feet = -Infinity;
     [27, 28, 29, 30, 31, 32].forEach((i) => { if (A[i][1] > feet) feet = A[i][1]; });
-    const pts = A.map((p) => [p[0], feet - p[1], -p[2] + playerZ]);
+    // Avatar now faces -z after faceHoopYaw, so place with +z (hoop is toward -z).
+    const pts = A.map((p) => [p[0], feet - p[1], p[2] + playerZ]);
 
     // Shadow on floor.
     ctx.save();
@@ -3548,38 +3602,51 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
   ctx.restore();
 }
 
+function viewIsInteractive() {
+  return state.activeView === "threed" || state.activeView === "full";
+}
+
 function handleCam3dPointerDown(event) {
-  if (state.activeView !== "threed") return;
+  if (!viewIsInteractive()) return;
   if (!state.cam3dPointers) state.cam3dPointers = new Map();
   state.cam3dPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
   try { nodes.overlayCanvas.setPointerCapture(event.pointerId); } catch (_) {}
 }
 
 function handleCam3dPointerMove(event) {
-  if (state.activeView !== "threed" || !state.cam3dPointers?.has(event.pointerId)) return;
+  if (!viewIsInteractive() || !state.cam3dPointers?.has(event.pointerId)) return;
   event.preventDefault();
   const pointers = state.cam3dPointers;
   const prev = pointers.get(event.pointerId);
   const cur = { x: event.clientX, y: event.clientY };
   pointers.set(event.pointerId, cur);
-
-  if (pointers.size >= 2) {
-    // Pinch zoom: compare current span of the two pointers to the stored span.
+  const twoFinger = pointers.size >= 2;
+  let span = 0;
+  if (twoFinger) {
     const keys = [...pointers.keys()];
     const p0 = pointers.get(keys[0]);
     const p1 = pointers.get(keys[1]);
-    const span = Math.hypot(p0.x - p1.x, p0.y - p1.y);
-    if (state.cam3dPinchSpan) {
-      const ratio = state.cam3dPinchSpan / span;
-      state.cam3d.dist = clamp(state.cam3d.dist * ratio, 7, 30);
+    span = Math.hypot(p0.x - p1.x, p0.y - p1.y);
+  }
+
+  if (state.activeView === "threed") {
+    if (twoFinger) {
+      if (state.cam3dPinchSpan) state.cam3d.dist = clamp(state.cam3d.dist * (state.cam3dPinchSpan / span), 7, 30);
+      state.cam3dPinchSpan = span;
+    } else {
+      state.cam3d.az = (state.cam3d.az - (cur.x - prev.x) * 0.4) % 360;
+      state.cam3d.el = clamp(state.cam3d.el + (cur.y - prev.y) * 0.3, 2, 85);
     }
-    state.cam3dPinchSpan = span;
   } else {
-    // Single-finger drag: orbit.
-    const dx = cur.x - prev.x;
-    const dy = cur.y - prev.y;
-    state.cam3d.az = (state.cam3d.az - dx * 0.4) % 360;
-    state.cam3d.el = clamp(state.cam3d.el + dy * 0.3, 2, 85);
+    // 2D Full view: pinch to zoom, one finger to pan.
+    const z = state.zoom2d;
+    if (twoFinger) {
+      if (state.cam3dPinchSpan) z.scale = clamp(z.scale * (span / state.cam3dPinchSpan), 0.6, 5);
+      state.cam3dPinchSpan = span;
+    } else {
+      z.panX += cur.x - prev.x;
+      z.panY += cur.y - prev.y;
+    }
   }
 }
 
@@ -3641,15 +3708,24 @@ function drawCanvas() {
         renderRect = fitPoseZoomRect(landmarks, width, height);
       }
       if (state.activeView === "full") {
-        drawCourtAndForceProxy(ctx, rect, scale, landmarks);
-        drawVirtualRimScene(ctx, rect, scale);
         detectBallCandidate(rect, landmarks);
+        ctx.save();
+        const z = state.zoom2d;
+        const fx = rect.x + rect.width / 2;
+        const fy = rect.y + rect.height / 2;
+        ctx.translate(z.panX, z.panY);
+        ctx.translate(fx, fy);
+        ctx.scale(z.scale, z.scale);
+        ctx.translate(-fx, -fy);
+        drawCourtAndForceProxy(ctx, rect, scale, landmarks);
         drawBallTrail(ctx, rect, scale);
+        drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
+        ctx.restore();
       } else {
         drawCourtAndForceProxy(ctx, rect, scale, landmarks);
+        drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
+        if (state.activeView === "compare") drawComparePanel(ctx, width, height);
       }
-      drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
-      if (state.activeView === "compare") drawComparePanel(ctx, width, height);
     } else {
       if (state.activeView === "full") {
         drawVirtualRimScene(ctx, rect, scale);
@@ -3758,7 +3834,12 @@ function bindEvents() {
       document.querySelectorAll("[data-view]").forEach((button) => {
         button.classList.toggle("active", button.dataset.view === state.activeView);
       });
-      nodes.overlayCanvas.classList.toggle("rotatable", state.activeView === "threed");
+      // Both the 3D and 2D-Full views capture drag/pinch, so suppress page scroll.
+      nodes.overlayCanvas.classList.toggle(
+        "rotatable",
+        state.activeView === "threed" || state.activeView === "full"
+      );
+      state.zoom2d = { scale: 1, panX: 0, panY: 0 };
       restartCanvas();
     }
   });
@@ -3771,6 +3852,7 @@ function bindEvents() {
   nodes.overlayCanvas.addEventListener("pointermove", handleCam3dPointerMove, { passive: false });
   nodes.overlayCanvas.addEventListener("pointerup", handleCam3dPointerUp);
   nodes.overlayCanvas.addEventListener("pointercancel", handleCam3dPointerUp);
+  nodes.overlayCanvas.classList.toggle("rotatable", viewIsInteractive());
 
   window.addEventListener("resize", restartCanvas);
 }
