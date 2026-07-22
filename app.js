@@ -2806,6 +2806,116 @@ function drawCourtGuide(ctx, rect, floorY, scale) {
   ctx.restore();
 }
 
+// Side-on perspective half-court for the 2D "Full" view. Uses the same verified
+// projection as the 3D view, but locked to an eye-level side camera (hoop/board/
+// pole/paint on the LEFT, center line on the RIGHT) matching a right→left shot.
+// Registered so the free-throw stand point sits at the athlete's feet and the
+// court scales to the athlete's real height (so it bleeds off-frame naturally).
+const SIDE_COURT_CAM = { az: -90, el: 3, dist: 19, target: [0, 1.4, 6], k: 0.9 };
+function drawSideCourt2D(ctx, rect, scale) {
+  const sample = state.poseSamples[state.poseSamples.length - 1];
+  const C = COURT3D;
+  const view = cam3dMatrix(SIDE_COURT_CAM.az, SIDE_COURT_CAM.el, SIDE_COURT_CAM.dist, SIDE_COURT_CAM.target);
+  // Frame the court to the rect (like the validated preview) then shift so the
+  // free-throw stand point lands under the athlete's feet on the floor line.
+  // Side-on court spreads along screen-x, so tie focal to rect width for a
+  // consistent framing across portrait/landscape videos.
+  const focal = rect.width * SIDE_COURT_CAM.k;
+  const cx = rect.x + rect.width * 0.5;
+  const cy = rect.y + rect.height * 0.5;
+  const anchor = sample ? forceAnchorSample(sample) : null;
+  const footNorm = Number.isFinite(anchor?.footX) ? anchor.footX : 0.5;
+  const anchorX = clamp(rect.x + footNorm * rect.width, rect.x + rect.width * 0.3, rect.x + rect.width * 0.7);
+  const anchorY = courtFloorY(rect);
+  const stand = proj3d([0, 0, C.FT_Z], view, cx, cy, focal);
+  const dx = anchorX - stand.x;
+  const dy = anchorY - stand.y;
+  const PS = (P) => {
+    const p = proj3d(P, view, cx, cy, focal);
+    return { x: p.x + dx, y: p.y + dy, depth: p.depth };
+  };
+  const stroke = (a, b, col, w) => {
+    const pa = PS(a);
+    const pb = PS(b);
+    if (pa.depth <= 1e-2 || pb.depth <= 1e-2) return;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  };
+  const polyline = (pts, col, w, closed) => {
+    const list = closed ? pts.concat([pts[0]]) : pts;
+    for (let i = 0; i < list.length - 1; i += 1) stroke(list[i], list[i + 1], col, w);
+  };
+  const fill = (pts, col) => {
+    const pj = pts.map((p) => PS(p));
+    if (pj.some((p) => p.depth <= 1e-2)) return;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    pj.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  const LINE = "rgba(236,232,232,.6)";
+  const FAINT = "rgba(236,232,232,.4)";
+  const LW = 1.6 * scale;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.width, rect.height);
+  ctx.clip();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  fill([[-C.HW, 0, 0], [C.HW, 0, 0], [C.HW, 0, 14], [-C.HW, 0, 14]], "rgba(18,30,40,.5)");
+  fill([[-C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, C.FT_Z], [-C.PAINT_HW, 0, C.FT_Z]], "rgba(28,50,68,.45)");
+  polyline([[-C.HW, 0, 0], [C.HW, 0, 0], [C.HW, 0, 14], [-C.HW, 0, 14]], LINE, LW, true);
+  stroke([-C.HW, 0, 14], [C.HW, 0, 14], FAINT, LW);
+  polyline([[-C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, C.FT_Z], [-C.PAINT_HW, 0, C.FT_Z]], LINE, LW, true);
+  const ft = [];
+  for (let i = 0; i <= 56; i += 1) {
+    const t = (i / 56) * 2 * Math.PI;
+    ft.push([C.FT_R * Math.cos(t), 0, C.FT_Z + C.FT_R * Math.sin(t)]);
+  }
+  polyline(ft, LINE, LW, false);
+  stroke([-C.CORNER_X, 0, 0], [-C.CORNER_X, 0, C.ARC_Z0], LINE, LW);
+  stroke([C.CORNER_X, 0, 0], [C.CORNER_X, 0, C.ARC_Z0], LINE, LW);
+  const a0 = Math.atan2(C.ARC_Z0 - C.BASKET_Z, -C.CORNER_X);
+  const a1 = Math.atan2(C.ARC_Z0 - C.BASKET_Z, C.CORNER_X);
+  const arc = [];
+  for (let i = 0; i <= 72; i += 1) {
+    const t = a0 + ((a1 - a0) * i) / 72;
+    arc.push([C.TPT_R * Math.cos(t), 0, C.BASKET_Z + C.TPT_R * Math.sin(t)]);
+  }
+  polyline(arc, LINE, LW, false);
+
+  // hoop assembly (left side)
+  const POLE = "rgba(150,150,156,.55)";
+  stroke([0, 0, C.POLE_Z], [0, C.BOARD_Y1 + 0.1, C.POLE_Z], POLE, 4 * scale);
+  const armY = (C.BOARD_Y0 + C.BOARD_Y1) / 2;
+  stroke([0, armY, C.POLE_Z], [0, armY, C.BOARD_Z], POLE, 3.4 * scale);
+  const bb = [
+    [-C.BOARD_HW, C.BOARD_Y0, C.BOARD_Z], [C.BOARD_HW, C.BOARD_Y0, C.BOARD_Z],
+    [C.BOARD_HW, C.BOARD_Y1, C.BOARD_Z], [-C.BOARD_HW, C.BOARD_Y1, C.BOARD_Z]
+  ];
+  fill(bb, "rgba(210,215,218,.1)");
+  polyline(bb, "rgba(240,235,230,.5)", LW, true);
+  polyline([
+    [-0.3, 3.05, C.BOARD_Z], [0.3, 3.05, C.BOARD_Z], [0.3, 3.5, C.BOARD_Z], [-0.3, 3.5, C.BOARD_Z]
+  ], "rgba(255,140,40,.6)", LW, true);
+  const rim = [];
+  for (let i = 0; i <= 40; i += 1) {
+    const t = (i / 40) * 2 * Math.PI;
+    rim.push([C.RIM_R * Math.cos(t), C.RIM_Y, C.BASKET_Z + C.RIM_R * Math.sin(t)]);
+  }
+  polyline(rim, "rgba(255,132,26,.85)", 3 * scale, false);
+
+  ctx.restore();
+}
+
 function drawVirtualRimScene(ctx, rect, scale) {
   if (!state.rim?.center) return;
   const center = mapNormalizedPoint(state.rim.center, rect);
@@ -2934,7 +3044,11 @@ function drawCourtAndForceProxy(ctx, rect, scale) {
   ctx.rect(rect.x, rect.y, rect.width, rect.height);
   ctx.clip();
 
-  drawCourtGuide(ctx, rect, floorY, scale);
+  if (state.activeView === "full") {
+    drawSideCourt2D(ctx, rect, scale);
+  } else {
+    drawCourtGuide(ctx, rect, floorY, scale);
+  }
   if (!sample) {
     ctx.restore();
     return;
@@ -3098,8 +3212,10 @@ COURT3D.ARC_Z0 = COURT3D.BASKET_Z + Math.sqrt(COURT3D.TPT_R ** 2 - COURT3D.CORNE
 
 const POSE_BONES_3D = [
   [11, 13], [13, 15], [12, 14], [14, 16], [11, 12], [23, 24], [11, 23], [12, 24],
-  [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32], [15, 19], [16, 20]
+  [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32], [15, 19], [16, 20],
+  [27, 29], [29, 31], [28, 30], [30, 32]
 ];
+const POSE_JOINTS_3D = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
 
 function cross3(a, b) {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -3280,29 +3396,58 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
 
     // Shadow on floor.
     ctx.save();
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.5;
     POSE_BONES_3D.forEach(([a, b]) => {
       line3d(ctx, s, [pts[a][0], 0, pts[a][2]], [pts[b][0], 0, pts[b][2]], "#0b0a08", 6);
     });
     ctx.restore();
 
-    // Bones: soft grey under-stroke + white top.
-    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#46464a", 7));
-    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#ece8e8", 3));
+    // Capsule bones: 3-layer (dark base → grey body → white core) for a rounded, tubular look.
+    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#2e2e32", 9));
+    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#96969c", 5));
+    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#f4f4f7", 2.4));
 
-    // Joint dots.
-    const jointSet = new Set();
-    POSE_BONES_3D.forEach(([a, b]) => { jointSet.add(a); jointSet.add(b); });
-    jointSet.forEach((i) => {
+    // Head: shaded sphere from the ears (7,8) + nose (0), with a neck to the shoulders.
+    const hasHead = [7, 8, 0].every((i) => pts[i] && Number.isFinite(pts[i][0]));
+    if (hasHead) {
+      const headC = [
+        (((pts[7][0] + pts[8][0]) / 2) + pts[0][0]) / 2,
+        (((pts[7][1] + pts[8][1]) / 2) + pts[0][1]) / 2,
+        (((pts[7][2] + pts[8][2]) / 2) + pts[0][2]) / 2
+      ];
+      const earDx = pts[7][0] - pts[8][0];
+      const earDy = pts[7][1] - pts[8][1];
+      const earDz = pts[7][2] - pts[8][2];
+      const headR = Math.max(0.1, Math.hypot(earDx, earDy, earDz) * 0.95);
+      const shMid = [(pts[11][0] + pts[12][0]) / 2, (pts[11][1] + pts[12][1]) / 2, (pts[11][2] + pts[12][2]) / 2];
+      // neck
+      line3d(ctx, s, shMid, headC, "#2e2e32", 9);
+      line3d(ctx, s, shMid, headC, "#96969c", 5);
+      const pc = proj3d(headC, view, s.cx, s.cy, focal);
+      const ptop = proj3d([headC[0], headC[1] + headR, headC[2]], view, s.cx, s.cy, focal);
+      if (pc.depth > 1e-2) {
+        const rpx = Math.max(6, Math.abs(ptop.y - pc.y));
+        ctx.fillStyle = "#2e2e32";
+        ctx.beginPath();
+        ctx.arc(pc.x, pc.y, rpx + 1.5, 0, 2 * Math.PI);
+        ctx.fill();
+        const grad = ctx.createRadialGradient(pc.x - rpx * 0.32, pc.y - rpx * 0.34, rpx * 0.2, pc.x, pc.y, rpx);
+        grad.addColorStop(0, "#f8f8fb");
+        grad.addColorStop(1, "#c9c9cf");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(pc.x, pc.y, rpx, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+
+    // Subtle joint dots at major joints only.
+    POSE_JOINTS_3D.forEach((i) => {
       const p = proj3d(pts[i], view, s.cx, s.cy, focal);
       if (p.depth <= 1e-2) return;
-      ctx.fillStyle = "#78787c";
+      ctx.fillStyle = "#f4f4f7";
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.fillStyle = "#f8f8fb";
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
+      ctx.arc(p.x, p.y, 2.6, 0, 2 * Math.PI);
       ctx.fill();
     });
   } else {
