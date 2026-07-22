@@ -34,6 +34,9 @@ const state = {
   selectedUrlIsObject: false,
   activeTab: "ball",
   activeView: "full",
+  cam3d: { az: 40, el: 18, dist: 13 },
+  cam3dTouch: null,
+  lastWorldLandmarks: null,
   analysis: null,
   previousSnapshot: null,
   snapshotSaved: false,
@@ -3080,6 +3083,280 @@ function drawNotice(ctx, width, height, title, body) {
   ctx.restore();
 }
 
+// ---------------------------------------------------------------------------
+// Interactive 3D view: FIBA half-court + hoop + white/grey avatar.
+// Ported from the offline renderer (court.py / court_avatar.py) so the on-court
+// look matches what was validated. Additive only — no metric/detection change.
+// ---------------------------------------------------------------------------
+const COURT3D = {
+  HW: 7.5, PAINT_HW: 2.45, FT_Z: 5.8, FT_R: 1.8,
+  BASKET_Z: 1.575, RIM_R: 0.225, RIM_Y: 3.05,
+  TPT_R: 6.75, CORNER_X: 6.6,
+  BOARD_Z: 1.2, BOARD_HW: 0.9, BOARD_Y0: 2.9, BOARD_Y1: 3.95, POLE_Z: -0.9
+};
+COURT3D.ARC_Z0 = COURT3D.BASKET_Z + Math.sqrt(COURT3D.TPT_R ** 2 - COURT3D.CORNER_X ** 2);
+
+const POSE_BONES_3D = [
+  [11, 13], [13, 15], [12, 14], [14, 16], [11, 12], [23, 24], [11, 23], [12, 24],
+  [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32], [15, 19], [16, 20]
+];
+
+function cross3(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function cam3dMatrix(az, el, dist, target) {
+  const ar = (az * Math.PI) / 180;
+  const er = (el * Math.PI) / 180;
+  const cam = [
+    target[0] + dist * Math.cos(er) * Math.sin(ar),
+    target[1] + dist * Math.sin(er),
+    target[2] - dist * Math.cos(er) * Math.cos(ar)
+  ];
+  let f = [target[0] - cam[0], target[1] - cam[1], target[2] - cam[2]];
+  const fn = Math.hypot(f[0], f[1], f[2]) || 1;
+  f = [f[0] / fn, f[1] / fn, f[2] / fn];
+  let r = cross3(f, [0, 1, 0]);
+  const rn = Math.hypot(r[0], r[1], r[2]) || 1;
+  r = [r[0] / rn, r[1] / rn, r[2] / rn];
+  const u = cross3(r, f);
+  return { cam, r, u, negf: [-f[0], -f[1], -f[2]] };
+}
+
+function proj3d(P, view, cx, cy, focal) {
+  const dx = P[0] - view.cam[0];
+  const dy = P[1] - view.cam[1];
+  const dz = P[2] - view.cam[2];
+  const vx = view.r[0] * dx + view.r[1] * dy + view.r[2] * dz;
+  const vy = view.u[0] * dx + view.u[1] * dy + view.u[2] * dz;
+  const vz = view.negf[0] * dx + view.negf[1] * dy + view.negf[2] * dz;
+  const depth = Math.max(1e-3, -vz);
+  return { x: cx + (focal * vx) / depth, y: cy - (focal * vy) / depth, depth };
+}
+
+function line3d(ctx, s, a, b, color, w) {
+  const pa = proj3d(a, s.view, s.cx, s.cy, s.focal);
+  const pb = proj3d(b, s.view, s.cx, s.cy, s.focal);
+  if (pa.depth <= 1e-2 || pb.depth <= 1e-2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = w;
+  ctx.beginPath();
+  ctx.moveTo(pa.x, pa.y);
+  ctx.lineTo(pb.x, pb.y);
+  ctx.stroke();
+}
+
+function polyline3d(ctx, s, pts, color, w, closed) {
+  const list = closed ? pts.concat([pts[0]]) : pts;
+  for (let i = 0; i < list.length - 1; i += 1) line3d(ctx, s, list[i], list[i + 1], color, w);
+}
+
+function fillpoly3d(ctx, s, pts, color, alpha) {
+  const projected = pts.map((p) => proj3d(p, s.view, s.cx, s.cy, s.focal));
+  if (projected.some((p) => p.depth <= 1e-2)) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  projected.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function alignWorldRotation(W) {
+  const mid = (a, b) => [(W[a][0] + W[b][0]) / 2, (W[a][1] + W[b][1]) / 2, (W[a][2] + W[b][2]) / 2];
+  const sh = mid(11, 12);
+  const hp = mid(23, 24);
+  let u = [sh[0] - hp[0], sh[1] - hp[1], sh[2] - hp[2]];
+  const un = Math.hypot(u[0], u[1], u[2]) + 1e-9;
+  u = [u[0] / un, u[1] / un, u[2] / un];
+  const target = [0, -1, 0];
+  const v = cross3(u, target);
+  const sMag = Math.hypot(v[0], v[1], v[2]);
+  const c = u[0] * target[0] + u[1] * target[1] + u[2] * target[2];
+  if (sMag < 1e-6) return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const k = (1 - c) / (sMag * sMag);
+  // R = I + [v]x + [v]x^2 * k  (Rodrigues)
+  const vx = [[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]];
+  const vx2 = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (let i = 0; i < 3; i += 1)
+    for (let j = 0; j < 3; j += 1)
+      vx2[i][j] = vx[i][0] * vx[0][j] + vx[i][1] * vx[1][j] + vx[i][2] * vx[2][j];
+  const R = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let i = 0; i < 3; i += 1)
+    for (let j = 0; j < 3; j += 1) R[i][j] += vx[i][j] + vx2[i][j] * k;
+  return R;
+}
+
+function drawThreeDScene(ctx, width, height, worldLandmarks) {
+  // Background gradient (dark court hall).
+  const grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, "#0b0c0e");
+  grad.addColorStop(1, "#161514");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+
+  const view = cam3dMatrix(state.cam3d.az, state.cam3d.el, state.cam3d.dist, [0, 1.2, 5.2]);
+  const focal = 1350 * (height / 900);
+  const s = { view, cx: width / 2, cy: height / 2, focal };
+  const C = COURT3D;
+  const LINE = "#ece8e8";
+
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  // Floor + paint fills.
+  fillpoly3d(ctx, s, [[-C.HW, 0, 0], [C.HW, 0, 0], [C.HW, 0, 14], [-C.HW, 0, 14]], "#131717", 0.92);
+  fillpoly3d(ctx, s, [[-C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, C.FT_Z], [-C.PAINT_HW, 0, C.FT_Z]], "#1a2e3c", 0.5);
+
+  // Court outline + center line.
+  polyline3d(ctx, s, [[-C.HW, 0, 0], [C.HW, 0, 0], [C.HW, 0, 14], [-C.HW, 0, 14]], LINE, 2, true);
+  line3d(ctx, s, [-C.HW, 0, 14], [C.HW, 0, 14], LINE, 2);
+
+  // Paint rectangle + free-throw circle.
+  polyline3d(ctx, s, [[-C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, 0], [C.PAINT_HW, 0, C.FT_Z], [-C.PAINT_HW, 0, C.FT_Z]], LINE, 2, true);
+  const ftCircle = [];
+  for (let i = 0; i <= 64; i += 1) {
+    const t = (i / 64) * 2 * Math.PI;
+    ftCircle.push([C.FT_R * Math.cos(t), 0, C.FT_Z + C.FT_R * Math.sin(t)]);
+  }
+  polyline3d(ctx, s, ftCircle, LINE, 2, false);
+
+  // 3pt: corners + arc.
+  line3d(ctx, s, [-C.CORNER_X, 0, 0], [-C.CORNER_X, 0, C.ARC_Z0], LINE, 2);
+  line3d(ctx, s, [C.CORNER_X, 0, 0], [C.CORNER_X, 0, C.ARC_Z0], LINE, 2);
+  const a0 = Math.atan2(C.ARC_Z0 - C.BASKET_Z, -C.CORNER_X);
+  const a1 = Math.atan2(C.ARC_Z0 - C.BASKET_Z, C.CORNER_X);
+  const arc = [];
+  for (let i = 0; i <= 80; i += 1) {
+    const t = a0 + ((a1 - a0) * i) / 80;
+    arc.push([C.TPT_R * Math.cos(t), 0, C.BASKET_Z + C.TPT_R * Math.sin(t)]);
+  }
+  polyline3d(ctx, s, arc, LINE, 2, false);
+
+  // Hoop: pole, arm, backboard, target square, rim.
+  const POLE = "#82787a";
+  line3d(ctx, s, [0, 0, C.POLE_Z], [0, C.BOARD_Y1 + 0.1, C.POLE_Z], POLE, 7);
+  const armY = (C.BOARD_Y0 + C.BOARD_Y1) / 2;
+  line3d(ctx, s, [0, armY, C.POLE_Z], [0, armY, C.BOARD_Z], POLE, 6);
+  const bb = [
+    [-C.BOARD_HW, C.BOARD_Y0, C.BOARD_Z], [C.BOARD_HW, C.BOARD_Y0, C.BOARD_Z],
+    [C.BOARD_HW, C.BOARD_Y1, C.BOARD_Z], [-C.BOARD_HW, C.BOARD_Y1, C.BOARD_Z]
+  ];
+  fillpoly3d(ctx, s, bb, "#d2d7d8", 0.16);
+  polyline3d(ctx, s, bb, "#f5f0eb", 2, true);
+  polyline3d(ctx, s, [
+    [-0.3, 3.05, C.BOARD_Z], [0.3, 3.05, C.BOARD_Z], [0.3, 3.5, C.BOARD_Z], [-0.3, 3.5, C.BOARD_Z]
+  ], "#ff8c28", 2, true);
+  const rim = [];
+  for (let i = 0; i <= 48; i += 1) {
+    const t = (i / 48) * 2 * Math.PI;
+    rim.push([C.RIM_R * Math.cos(t), C.RIM_Y, C.BASKET_Z + C.RIM_R * Math.sin(t)]);
+  }
+  polyline3d(ctx, s, rim, "#ff8214", 5, false);
+  for (let k = 0; k < 48; k += 4) {
+    const t = (k / 48) * 2 * Math.PI;
+    const x = C.RIM_R * Math.cos(t);
+    const z = C.BASKET_Z + C.RIM_R * Math.sin(t);
+    line3d(ctx, s, [x, C.RIM_Y, z], [x * 0.5, C.RIM_Y - 0.45, C.BASKET_Z + (z - C.BASKET_Z) * 0.5], "#d2d2d2", 1);
+  }
+
+  // Avatar (white/grey), gravity-aligned, placed at the free-throw area facing hoop.
+  if (worldLandmarks && worldLandmarks.length >= 33) {
+    const W = worldLandmarks.map((p) => [p.x, p.y, p.z ?? 0]);
+    const R = alignWorldRotation(W);
+    const A = W.map((p) => {
+      const rx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2];
+      const ry = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2];
+      const rz = R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2];
+      return [rx, ry, rz];
+    });
+    const playerZ = 4.6;
+    let feet = -Infinity;
+    [27, 28, 29, 30, 31, 32].forEach((i) => { if (A[i][1] > feet) feet = A[i][1]; });
+    const pts = A.map((p) => [p[0], feet - p[1], -p[2] + playerZ]);
+
+    // Shadow on floor.
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    POSE_BONES_3D.forEach(([a, b]) => {
+      line3d(ctx, s, [pts[a][0], 0, pts[a][2]], [pts[b][0], 0, pts[b][2]], "#0b0a08", 6);
+    });
+    ctx.restore();
+
+    // Bones: soft grey under-stroke + white top.
+    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#46464a", 7));
+    POSE_BONES_3D.forEach(([a, b]) => line3d(ctx, s, pts[a], pts[b], "#ece8e8", 3));
+
+    // Joint dots.
+    const jointSet = new Set();
+    POSE_BONES_3D.forEach(([a, b]) => { jointSet.add(a); jointSet.add(b); });
+    jointSet.forEach((i) => {
+      const p = proj3d(pts[i], view, s.cx, s.cy, focal);
+      if (p.depth <= 1e-2) return;
+      ctx.fillStyle = "#78787c";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.fillStyle = "#f8f8fb";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
+      ctx.fill();
+    });
+  } else {
+    ctx.fillStyle = "rgba(255,255,255,.5)";
+    ctx.font = "700 11px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("3D 姿勢を待機中…", width / 2, height / 2);
+    ctx.textAlign = "left";
+  }
+  ctx.restore();
+}
+
+function handleCam3dPointerDown(event) {
+  if (state.activeView !== "threed") return;
+  if (!state.cam3dPointers) state.cam3dPointers = new Map();
+  state.cam3dPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  try { nodes.overlayCanvas.setPointerCapture(event.pointerId); } catch (_) {}
+}
+
+function handleCam3dPointerMove(event) {
+  if (state.activeView !== "threed" || !state.cam3dPointers?.has(event.pointerId)) return;
+  event.preventDefault();
+  const pointers = state.cam3dPointers;
+  const prev = pointers.get(event.pointerId);
+  const cur = { x: event.clientX, y: event.clientY };
+  pointers.set(event.pointerId, cur);
+
+  if (pointers.size >= 2) {
+    // Pinch zoom: compare current span of the two pointers to the stored span.
+    const keys = [...pointers.keys()];
+    const p0 = pointers.get(keys[0]);
+    const p1 = pointers.get(keys[1]);
+    const span = Math.hypot(p0.x - p1.x, p0.y - p1.y);
+    if (state.cam3dPinchSpan) {
+      const ratio = state.cam3dPinchSpan / span;
+      state.cam3d.dist = clamp(state.cam3d.dist * ratio, 7, 30);
+    }
+    state.cam3dPinchSpan = span;
+  } else {
+    // Single-finger drag: orbit.
+    const dx = cur.x - prev.x;
+    const dy = cur.y - prev.y;
+    state.cam3d.az = (state.cam3d.az - dx * 0.4) % 360;
+    state.cam3d.el = clamp(state.cam3d.el + dy * 0.3, 2, 85);
+  }
+}
+
+function handleCam3dPointerUp(event) {
+  if (!state.cam3dPointers) return;
+  state.cam3dPointers.delete(event.pointerId);
+  if (state.cam3dPointers.size < 2) state.cam3dPinchSpan = 0;
+  try { nodes.overlayCanvas.releasePointerCapture(event.pointerId); } catch (_) {}
+}
+
 function drawCanvas() {
   const { width, height, dpr } = sizeCanvas();
   const ctx = nodes.overlayCanvas.getContext("2d");
@@ -3121,8 +3398,12 @@ function drawCanvas() {
   } else {
     const result = detectPoseForCurrentFrame();
     landmarks = result?.landmarks?.[0];
-    if (landmarks?.length) {
-      appendPoseSample(landmarks, result?.worldLandmarks?.[0]);
+    const world = result?.worldLandmarks?.[0];
+    if (world?.length) state.lastWorldLandmarks = world;
+    if (landmarks?.length) appendPoseSample(landmarks, world);
+    if (state.activeView === "threed") {
+      drawThreeDScene(ctx, width, height, world || state.lastWorldLandmarks);
+    } else if (landmarks?.length) {
       if (state.activeView === "body" || state.activeView === "compare") {
         renderRect = fitPoseZoomRect(landmarks, width, height);
       }
@@ -3170,7 +3451,13 @@ function drawCanvas() {
         : state.ballTrail.length >= 3
           ? "ball candidates unverified"
           : "ball pending";
-  ctx.fillText(state.activeView === "full" ? `${rimLabel} / ${ballLabel}` : state.activeView, 18, 25);
+  const bottomLabel =
+    state.activeView === "full"
+      ? `${rimLabel} / ${ballLabel}`
+      : state.activeView === "threed"
+        ? "ドラッグで回転 · ピンチで拡大縮小"
+        : state.activeView;
+  ctx.fillText(bottomLabel, 18, 25);
   ctx.restore();
 
   state.animationId = requestAnimationFrame(drawCanvas);
@@ -3238,6 +3525,7 @@ function bindEvents() {
       document.querySelectorAll("[data-view]").forEach((button) => {
         button.classList.toggle("active", button.dataset.view === state.activeView);
       });
+      nodes.overlayCanvas.classList.toggle("rotatable", state.activeView === "threed");
       restartCanvas();
     }
   });
@@ -3245,6 +3533,12 @@ function bindEvents() {
   nodes.rimPickLayer.addEventListener("pointerdown", handleRimPick);
   nodes.rimPickLayer.addEventListener("click", handleRimPick);
   nodes.rimPickLayer.addEventListener("touchend", handleRimPick, { passive: false });
+
+  nodes.overlayCanvas.addEventListener("pointerdown", handleCam3dPointerDown);
+  nodes.overlayCanvas.addEventListener("pointermove", handleCam3dPointerMove, { passive: false });
+  nodes.overlayCanvas.addEventListener("pointerup", handleCam3dPointerUp);
+  nodes.overlayCanvas.addEventListener("pointercancel", handleCam3dPointerUp);
+
   window.addEventListener("resize", restartCanvas);
 }
 
