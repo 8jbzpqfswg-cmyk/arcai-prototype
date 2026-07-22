@@ -27,7 +27,7 @@ const savedPlaybackRate = Number(localStorage.getItem("arcai:playback-rate"));
 const state = {
   screen: "home",
   language: savedLanguage === "en" ? "en" : "ja",
-  playbackRate: [0.25, 0.5, 1].includes(savedPlaybackRate) ? savedPlaybackRate : 1,
+  playbackRate: [0.25, 0.5, 0.75, 1].includes(savedPlaybackRate) ? savedPlaybackRate : 1,
   activeMetricKey: null,
   selectedFile: null,
   selectedUrl: "",
@@ -717,6 +717,26 @@ function applyPlaybackRate() {
   nodes.sourceVideo.playbackRate = state.playbackRate;
   document.querySelectorAll("[data-speed]").forEach((button) => {
     button.classList.toggle("active", Number(button.dataset.speed) === state.playbackRate);
+  });
+  const label = state.playbackRate === 1 ? "1x" : `${state.playbackRate}x`;
+  document.querySelectorAll(".speed-current").forEach((el) => {
+    el.textContent = label;
+  });
+}
+
+function closeSpeedMenus() {
+  document.querySelectorAll(".speed-popup").forEach((el) => el.classList.add("hidden"));
+  document.querySelectorAll(".speed-toggle").forEach((el) => el.setAttribute("aria-expanded", "false"));
+}
+
+function syncTransportButton() {
+  const paused = nodes.sourceVideo.paused || nodes.sourceVideo.ended;
+  document.querySelectorAll("[data-action='playpause']").forEach((btn) => {
+    const icon = btn.querySelector(".tp-icon");
+    const label = btn.querySelector(".tp-label");
+    if (icon) icon.textContent = paused ? "▶" : "❚❚";
+    if (label) label.textContent = paused ? "再生" : "一時停止";
+    btn.classList.toggle("playing", !paused);
   });
 }
 
@@ -3102,33 +3122,26 @@ function drawBallTrail(ctx, rect, scale) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  // Draw the flight arc progressively: everything released up to the current time
-  // stays on screen, so the trajectory is visible throughout (not a single dot
-  // that blinks out mid-flight).
+  // Short fading tail (afterimage) that follows the ball — not a permanent arc.
+  const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
+  const BALL_TAIL_S = 0.45;
   if (timed.length >= 2) {
-    const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
-    const revealed = timed.filter((item) => item.time <= now + 0.05);
-    if (revealed.length >= 2) {
-      const arc = revealed.map((item) => mapNormalizedPoint(item.normalized, rect));
-      const grad = ctx.createLinearGradient(arc[0].x, arc[0].y, arc[arc.length - 1].x, arc[arc.length - 1].y);
-      grad.addColorStop(0, "rgba(255, 196, 0, .18)");
-      grad.addColorStop(1, "rgba(255, 196, 0, .7)");
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = 2.4 * scale;
+    const tail = timed.filter((item) => item.time <= now + 0.03 && item.time >= now - BALL_TAIL_S);
+    for (let i = 1; i < tail.length; i += 1) {
+      const a = mapNormalizedPoint(tail[i - 1].normalized, rect);
+      const b = mapNormalizedPoint(tail[i].normalized, rect);
+      const age = clamp((now - tail[i].time) / BALL_TAIL_S, 0, 1); // 0 = newest
+      ctx.strokeStyle = `rgba(255, 196, 0, ${0.6 * (1 - age)})`;
+      ctx.lineWidth = (2.6 - 1.4 * age) * scale;
       ctx.beginPath();
-      arc.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
       ctx.stroke();
     }
   }
 
-  // Current ball head (interpolated at playback time; after the tracked range,
-  // rest it on the last known point so the completed arc keeps its ball).
-  let head = currentBallVisualPoint(timed);
-  if (!head && timed.length) {
-    const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
-    const revealed = timed.filter((item) => item.time <= now + 0.05);
-    if (revealed.length) head = revealed[revealed.length - 1];
-  }
+  // Current ball head (interpolated at playback time).
+  const head = currentBallVisualPoint(timed);
   if (head) {
     const p = mapNormalizedPoint(head.normalized, rect);
     const alpha = head.source === "display_interpolation" ? 0.82 : 0.96;
@@ -3297,6 +3310,36 @@ function drawPoseLandmarks(ctx, landmarks, rect, scale, view = state.activeView)
     const color = isWrist ? "#ffc400" : isShoulderHip ? "#fff0b8" : "#dff8ff";
     dot(ctx, p, (isWrist ? 2.45 : 1.75) * scale * dotBoost, color);
   });
+
+  // Head: a small circle (like the 3D avatar) plus a neck, so the figure reads as
+  // a person. Sized from the ears and capped so it never gets too big.
+  if (mono && visible(7) && visible(8)) {
+    const ear1 = mapLandmark(landmarks[7], rect);
+    const ear2 = mapLandmark(landmarks[8], rect);
+    const nose = visible(0) ? mapLandmark(landmarks[0], rect) : null;
+    const hx = nose ? (ear1.x + ear2.x + nose.x) / 3 : (ear1.x + ear2.x) / 2;
+    const hy = nose ? (ear1.y + ear2.y + nose.y) / 3 : (ear1.y + ear2.y) / 2;
+    const headR = clamp(Math.hypot(ear1.x - ear2.x, ear1.y - ear2.y) * 0.9, 5 * scale, 13 * scale);
+    if (visible(11) && visible(12)) {
+      const s1 = mapLandmark(landmarks[11], rect);
+      const s2 = mapLandmark(landmarks[12], rect);
+      const shMid = point((s1.x + s2.x) / 2, (s1.y + s2.y) / 2);
+      ctx.strokeStyle = "rgba(70,70,74,.9)";
+      ctx.lineWidth = 3.4 * scale;
+      ctx.beginPath();
+      ctx.moveTo(shMid.x, shMid.y);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(70,70,74,.95)";
+    ctx.beginPath();
+    ctx.arc(hx, hy, headR + 1.4 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(240,240,244,.96)";
+    ctx.beginPath();
+    ctx.arc(hx, hy, headR, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -3483,6 +3526,31 @@ function faceHoopYaw(A) {
   return A.map((p) => [p[0] * ct + p[2] * st, p[1], -p[0] * st + p[2] * ct]);
 }
 
+// Light temporal smoothing of the world landmarks to calm per-frame jitter.
+// (It cannot fix the depth of far-side joints in a single side-view — that needs
+// a front/45° angle — but it makes the motion read more naturally.)
+function smoothWorldLandmarks(wl) {
+  const raw = wl.map((p) => [p.x, p.y, p.z ?? 0]);
+  const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
+  if (!state.wlBuf) state.wlBuf = [];
+  const last = state.wlBuf[state.wlBuf.length - 1];
+  if (!last || Math.abs(last.t - now) > 1e-3) state.wlBuf.push({ t: now, W: raw });
+  state.wlBuf = state.wlBuf.filter((e) => Math.abs(e.t - now) <= 0.14).slice(-6);
+  const n = state.wlBuf.length;
+  if (n <= 1) return raw;
+  return raw.map((_, i) => {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (const e of state.wlBuf) {
+      x += e.W[i][0];
+      y += e.W[i][1];
+      z += e.W[i][2];
+    }
+    return [x / n, y / n, z / n];
+  });
+}
+
 function drawThreeDScene(ctx, width, height, worldLandmarks) {
   // Background gradient (dark court hall).
   const grad = ctx.createLinearGradient(0, 0, 0, height);
@@ -3562,7 +3630,7 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
 
   // Avatar (white/grey), gravity-aligned, turned to face the hoop, placed on court.
   if (worldLandmarks && worldLandmarks.length >= 33) {
-    const W = worldLandmarks.map((p) => [p.x, p.y, p.z ?? 0]);
+    const W = smoothWorldLandmarks(worldLandmarks);
     const R = alignWorldRotation(W);
     const A = faceHoopYaw(W.map((p) => {
       const rx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2];
@@ -3639,7 +3707,63 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
     ctx.fillText("3D 姿勢を待機中…", width / 2, height / 2);
     ctx.textAlign = "left";
   }
+
+  drawBall3D(ctx, s, view, focal, C);
   ctx.restore();
+}
+
+// Ball in the 3D scene. Needs a calibrated rim: the rim gives real scale
+// (radius 0.225 m) and an image anchor, so the image trajectory maps to court
+// coordinates (image-x → depth toward hoop, image-y → height, width assumed 0).
+function drawBall3D(ctx, s, view, focal, C) {
+  const video = nodes.sourceVideo;
+  // On iOS videoWidth stays 0 until interaction, so fall back to the server size.
+  const vW = video.videoWidth || state.importedBallServerSize?.width || 0;
+  const vH = video.videoHeight || state.importedBallServerSize?.height || 0;
+  if (!state.rim?.center || !state.rim?.radiusX || vW < 1 || vH < 1) return;
+  let trail = importedBallTrailPoints();
+  if (trail.length < 3) trail = stableBallTrail();
+  if (!trail.length) trail = manualBallVisualTrail();
+  const timed = trail
+    .filter((item) => item && item.normalized && Number.isFinite(item.time))
+    .sort((a, b) => a.time - b.time);
+  if (timed.length < 2) return;
+
+  const pxPerM = (state.rim.radiusX * vW) / C.RIM_R;
+  if (!(pxPerM > 1)) return;
+  const dir = courtFacingSign();
+  const to3d = (nrm) => [
+    0,
+    C.RIM_Y + ((state.rim.center.y - nrm.y) * vH) / pxPerM,
+    C.BASKET_Z + (dir * (nrm.x - state.rim.center.x) * vW) / pxPerM
+  ];
+  const now = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  const TAIL = 0.45;
+  const tail = timed.filter((item) => item.time <= now + 0.03 && item.time >= now - TAIL);
+  for (let i = 1; i < tail.length; i += 1) {
+    const age = clamp((now - tail[i].time) / TAIL, 0, 1);
+    line3d(ctx, s, to3d(tail[i - 1].normalized), to3d(tail[i].normalized), `rgba(255,196,0,${0.6 * (1 - age)})`, 3 - 1.5 * age);
+  }
+  const head = currentBallVisualPoint(timed);
+  if (head) {
+    const P = to3d(head.normalized);
+    const p = proj3d(P, view, s.cx, s.cy, focal);
+    const pTop = proj3d([P[0], P[1] + 0.12, P[2]], view, s.cx, s.cy, focal);
+    if (p.depth > 1e-2) {
+      const rpx = clamp(Math.abs(pTop.y - p.y), 4, 16);
+      ctx.fillStyle = "rgba(30,20,10,.5)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rpx + 1.4, 0, 2 * Math.PI);
+      ctx.fill();
+      const grad = ctx.createRadialGradient(p.x - rpx * 0.3, p.y - rpx * 0.3, rpx * 0.2, p.x, p.y, rpx);
+      grad.addColorStop(0, "#ffcf6a");
+      grad.addColorStop(1, "#ef8a18");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rpx, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  }
 }
 
 function viewIsInteractive() {
@@ -3840,6 +3964,9 @@ function bindEvents() {
 
   nodes.sourceVideo.addEventListener("loadedmetadata", renderCalibrationGuide);
   nodes.sourceVideo.addEventListener("canplay", renderCalibrationGuide);
+  nodes.sourceVideo.addEventListener("play", syncTransportButton);
+  nodes.sourceVideo.addEventListener("pause", syncTransportButton);
+  nodes.sourceVideo.addEventListener("ended", syncTransportButton);
   nodes.sourceVideo.addEventListener("loadeddata", clearVideoIssueIfReady);
   nodes.sourceVideo.addEventListener("canplay", clearVideoIssueIfReady);
 
@@ -3849,6 +3976,21 @@ function bindEvents() {
     if (actionTarget?.dataset.action === "home") showScreen("home");
     if (actionTarget?.dataset.action === "rim") startRimPicking();
     if (actionTarget?.dataset.action === "ball") startBallPicking();
+    if (actionTarget?.dataset.action === "playpause") {
+      if (nodes.sourceVideo.paused || nodes.sourceVideo.ended) nodes.sourceVideo.play().catch(() => {});
+      else nodes.sourceVideo.pause();
+    }
+    if (actionTarget?.dataset.action === "speed-menu") {
+      const popup = actionTarget.parentElement.querySelector(".speed-popup");
+      const willOpen = popup?.classList.contains("hidden");
+      closeSpeedMenus();
+      if (popup && willOpen) {
+        popup.classList.remove("hidden");
+        actionTarget.setAttribute("aria-expanded", "true");
+      }
+    } else if (!event.target.closest(".speed-popup")) {
+      closeSpeedMenus();
+    }
 
     const langTarget = event.target.closest("[data-lang]");
     if (langTarget) {
@@ -3862,6 +4004,7 @@ function bindEvents() {
       state.playbackRate = Number(speedTarget.dataset.speed);
       localStorage.setItem("arcai:playback-rate", String(state.playbackRate));
       applyPlaybackRate();
+      closeSpeedMenus();
     }
 
     const tabTarget = event.target.closest("[data-tab]");
@@ -3913,5 +4056,6 @@ function bindEvents() {
 applyLanguage();
 applyPlaybackRate();
 bindEvents();
+syncTransportButton();
 splash();
 drawCanvas();
