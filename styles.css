@@ -840,7 +840,7 @@ button {
 
 .view-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.3rem;
   padding: 0.4rem 0.5rem;
   border-bottom: 1px solid var(--line);
@@ -884,6 +884,15 @@ button {
 
 .video-box video {
   object-fit: contain;
+}
+
+/* 3D view: capture drag/pinch on the canvas without scrolling the page. */
+.canvas-box canvas.rotatable {
+  touch-action: none;
+  cursor: grab;
+}
+.canvas-box canvas.rotatable:active {
+  cursor: grabbing;
 }
 
 .video-placeholder {
