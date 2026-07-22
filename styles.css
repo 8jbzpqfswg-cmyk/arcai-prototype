@@ -840,7 +840,7 @@ button {
 
 .view-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.3rem;
   padding: 0.4rem 0.5rem;
   border-bottom: 1px solid var(--line);
