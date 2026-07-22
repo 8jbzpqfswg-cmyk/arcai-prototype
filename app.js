@@ -3094,21 +3094,48 @@ function drawBallTrail(ctx, rect, scale) {
   if (visibleTrail.length < 3) visibleTrail = stableBallTrail();
   if (!visibleTrail.length) visibleTrail = manualBallVisualTrail();
 
-  const currentBall = currentBallVisualPoint(visibleTrail);
-  if (!currentBall) return;
+  const timed = visibleTrail
+    .filter((item) => item && item.normalized && Number.isFinite(item.time))
+    .sort((a, b) => a.time - b.time);
 
   ctx.save();
-  const p = mapNormalizedPoint(currentBall.normalized, rect);
-  const alpha = currentBall.source === "display_interpolation" ? 0.72 : 0.94;
-  ctx.shadowColor = `rgba(255, 196, 0, ${alpha * 0.7})`;
-  ctx.shadowBlur = 5 * scale;
-  dot(
-    ctx,
-    p,
-    clamp((currentBall.radius || 4) * 0.92, 3.2, 7) * scale,
-    `rgba(255, 196, 0, ${alpha})`,
-    "rgba(255,255,255,.78)"
-  );
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // Draw the flight arc progressively: everything released up to the current time
+  // stays on screen, so the trajectory is visible throughout (not a single dot
+  // that blinks out mid-flight).
+  if (timed.length >= 2) {
+    const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
+    const revealed = timed.filter((item) => item.time <= now + 0.05);
+    if (revealed.length >= 2) {
+      const arc = revealed.map((item) => mapNormalizedPoint(item.normalized, rect));
+      const grad = ctx.createLinearGradient(arc[0].x, arc[0].y, arc[arc.length - 1].x, arc[arc.length - 1].y);
+      grad.addColorStop(0, "rgba(255, 196, 0, .18)");
+      grad.addColorStop(1, "rgba(255, 196, 0, .7)");
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2.4 * scale;
+      ctx.beginPath();
+      arc.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+      ctx.stroke();
+    }
+  }
+
+  // Current ball head (interpolated at playback time; after the tracked range,
+  // rest it on the last known point so the completed arc keeps its ball).
+  let head = currentBallVisualPoint(timed);
+  if (!head && timed.length) {
+    const now = Number.isFinite(nodes.sourceVideo.currentTime) ? nodes.sourceVideo.currentTime : 0;
+    const revealed = timed.filter((item) => item.time <= now + 0.05);
+    if (revealed.length) head = revealed[revealed.length - 1];
+  }
+  if (head) {
+    const p = mapNormalizedPoint(head.normalized, rect);
+    const alpha = head.source === "display_interpolation" ? 0.82 : 0.96;
+    ctx.shadowColor = `rgba(255, 196, 0, ${alpha * 0.7})`;
+    ctx.shadowBlur = 5 * scale;
+    dot(ctx, p, clamp((head.radius || 4) * 0.92, 3.2, 7) * scale, `rgba(255, 196, 0, ${alpha})`, "rgba(255,255,255,.78)");
+  }
   ctx.restore();
 }
 
