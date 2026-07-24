@@ -27,7 +27,7 @@ const savedPlaybackRate = Number(localStorage.getItem("arcai:playback-rate"));
 const state = {
   screen: "home",
   language: savedLanguage === "en" ? "en" : "ja",
-  playbackRate: [0.25, 0.5, 0.75, 1].includes(savedPlaybackRate) ? savedPlaybackRate : 1,
+  playbackRate: [0.25, 0.5, 1].includes(savedPlaybackRate) ? savedPlaybackRate : 1,
   activeMetricKey: null,
   selectedFile: null,
   selectedUrl: "",
@@ -46,6 +46,7 @@ const state = {
   poseEnginePromise: null,
   poseResult: null,
   lastPoseTime: -1,
+  seeking: false,
   poseRoi: null,
   poseImageLandmarker: null,
   poseCropCanvas: document.createElement("canvas"),
@@ -738,6 +739,41 @@ function syncTransportButton() {
     if (label) label.textContent = paused ? "再生" : "一時停止";
     btn.classList.toggle("playing", !paused);
   });
+}
+
+// 撮影データは 30fps（1コマ=1/33ms）。コマ送りの刻みに使う。
+const VIDEO_FPS = 30;
+
+// 1コマ進む/戻る。必ず一時停止してから currentTime を刻む（フレーム単位の観察用）。
+function stepFrame(dir) {
+  const video = nodes.sourceVideo;
+  if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+  video.pause();
+  const next = clamp(video.currentTime + dir / VIDEO_FPS, 0, Math.max(0, video.duration - 1e-3));
+  video.currentTime = next;
+  updateTransportProgress();
+}
+
+// シークバー（0..1）から再生位置へ。canvas は currentTime に追従して再描画される。
+function seekToFraction(frac) {
+  const video = nodes.sourceVideo;
+  if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+  video.currentTime = clamp(frac, 0, 0.999) * video.duration;
+  updateTransportProgress();
+}
+
+// 両パネルのシークバー位置と時間表示を現在の再生位置に同期（毎フレーム呼ぶ）。
+function updateTransportProgress() {
+  const video = nodes.sourceVideo;
+  const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+  const frac = dur ? clamp(video.currentTime / dur, 0, 1) : 0;
+  if (!state.seeking) {
+    document.querySelectorAll(".seekbar").forEach((el) => {
+      el.value = String(Math.round(frac * 1000));
+    });
+  }
+  const timeText = dur ? `${video.currentTime.toFixed(1)} / ${dur.toFixed(1)}s` : "0.0 / 0.0s";
+  document.querySelectorAll(".tp-time").forEach((el) => { el.textContent = timeText; });
 }
 
 function loadPreviousSnapshot() {
@@ -1473,7 +1509,7 @@ function setRimPickText(title, body) {
 }
 
 function setVideoPickingControls(active) {
-  nodes.sourceVideo.controls = !active;
+  // Native <video controls> は使わず、独自トランスポート（両パネル共通）で操作する。
   nodes.sourceVideo.classList.toggle("picking", active);
 }
 
@@ -3510,20 +3546,45 @@ function alignWorldRotation(W) {
   return R;
 }
 
-// After gravity alignment, spin the avatar about the vertical axis so it faces
-// the hoop (toward -z). Facing is taken from where the head points: nose (0)
-// relative to the ear midpoint (7,8), projected onto the horizontal plane.
-function faceHoopYaw(A) {
-  const nose = A[0];
-  const earMid = [(A[7][0] + A[8][0]) / 2, (A[7][1] + A[8][1]) / 2, (A[7][2] + A[8][2]) / 2];
-  const fx = nose[0] - earMid[0];
-  const fz = nose[2] - earMid[2];
-  if (!Number.isFinite(fx) || Math.hypot(fx, fz) < 1e-6) return A;
-  const theta = Math.PI - Math.atan2(fx, fz); // rotate facing to point toward -z
-  const ct = Math.cos(theta);
-  const st = Math.sin(theta);
-  // Ry: x' = x·cos + z·sin ; z' = -x·sin + z·cos ; y unchanged.
-  return A.map((p) => [p[0] * ct + p[2] * st, p[1], -p[0] * st + p[2] * ct]);
+// 左右方向（medial-lateral）の固定オフセット（メートル, 基準体格）。真横撮影では
+// この軸＝カメラ深度(z)で、MediaPipe が far-side 関節を推測で埋める＝暴れる部分。
+// 左関節は +、右関節は −。中央(鼻)は 0。矢状面(x,y)の角度はここに一切依存しない。
+const LATERAL_OFFSET = (() => {
+  const off = new Array(33).fill(0);
+  const setLR = (l, r, mag) => { off[l] = mag; off[r] = -mag; };
+  setLR(1, 4, 0.05); setLR(2, 5, 0.05); setLR(3, 6, 0.05);
+  setLR(7, 8, 0.075); setLR(9, 10, 0.045);
+  setLR(11, 12, 0.19); setLR(13, 14, 0.17); setLR(15, 16, 0.15);
+  setLR(17, 18, 0.15); setLR(19, 20, 0.15); setLR(21, 22, 0.15);
+  setLR(23, 24, 0.11); setLR(25, 26, 0.10); setLR(27, 28, 0.10);
+  setLR(29, 30, 0.10); setLR(31, 32, 0.10);
+  return off;
+})();
+
+// 矢状面ロックのアバター座標を作る。真横(矢状面)撮影で「正確に取れる」x(前後)・y(上下)は
+// そのまま使い、depth(左右方向 z)だけは per-frame の推測値を捨てて、その人の体格に応じた
+// 安定した左右幅に固定する。これで股・膝の屈曲、足関節の背屈、肘・肩の屈曲は真横で見えた
+// 角度どおりに描かれ、奥側関節の z の暴れによる dip 姿勢の破綻がなくなる。
+// (単一真横視点では「奥行き方向そのものの動き」は依然として復元できない。ここで正しくするのは
+//  あくまで矢状面内の関節運動。)
+function sagittalAvatarPoints(worldLandmarks) {
+  const W = smoothWorldLandmarks(worldLandmarks); // [[x,y,z]…] m, 腰原点, y下向き
+  // 体格スケール: 肩中点↔股中点の縦距離(y は信頼できる)を基準 0.5m で正規化。
+  const shMidY = (W[11][1] + W[12][1]) / 2;
+  const hipMidY = (W[23][1] + W[24][1]) / 2;
+  const shMidX = (W[11][0] + W[12][0]) / 2;
+  const hipMidX = (W[23][0] + W[24][0]) / 2;
+  const torsoLen = Math.hypot(shMidX - hipMidX, shMidY - hipMidY) || 0.5;
+  const bodyScale = clamp(torsoLen / 0.5, 0.55, 1.8);
+  // depth を推測値→固定左右幅に置き換え。x,y は保持。
+  const flat = W.map((p, i) => [p[0], p[1], LATERAL_OFFSET[i] * bodyScale]);
+  // 重力補正(体幹を鉛直へ)。z が一定なので回転は矢状面内に収まり、角度が保たれる。
+  const R = alignWorldRotation(flat);
+  return flat.map((p) => [
+    R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2],
+    R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2],
+    R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2]
+  ]);
 }
 
 // Light temporal smoothing of the world landmarks to calm per-frame jitter.
@@ -3628,21 +3689,26 @@ function drawThreeDScene(ctx, width, height, worldLandmarks) {
     line3d(ctx, s, [x, C.RIM_Y, z], [x * 0.5, C.RIM_Y - 0.45, C.BASKET_Z + (z - C.BASKET_Z) * 0.5], "#d2d2d2", 1);
   }
 
-  // Avatar (white/grey), gravity-aligned, turned to face the hoop, placed on court.
+  // Avatar (white/grey), sagittal-locked, turned to face the hoop, placed on court.
   if (worldLandmarks && worldLandmarks.length >= 33) {
-    const W = smoothWorldLandmarks(worldLandmarks);
-    const R = alignWorldRotation(W);
-    const A = faceHoopYaw(W.map((p) => {
-      const rx = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2];
-      const ry = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2];
-      const rz = R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2];
-      return [rx, ry, rz];
-    }));
+    const A = sagittalAvatarPoints(worldLandmarks);
+    // リングの方を向かせる。頭の向きの推測 z ではなく、真横で正確に見える前後軸(=x)から
+    // 「体の前方」を求め、それをコート奥行き -z(リング側) に合わせる 90° 回転。
+    // 前方 = つま先(31/32) が踵(29/30) より前にある向き。取れなければ 鼻(0)−耳中点 で代替。
+    const toeX = (A[31][0] + A[32][0]) / 2;
+    const heelX = (A[29][0] + A[30][0]) / 2;
+    let forwardX = toeX - heelX;
+    if (!Number.isFinite(forwardX) || Math.abs(forwardX) < 0.03) {
+      forwardX = A[0][0] - (A[7][0] + A[8][0]) / 2;
+    }
+    const theta = (forwardX >= 0 ? 1 : -1) * Math.PI / 2;
+    const ct = Math.cos(theta);
+    const st = Math.sin(theta);
+    const Ay = A.map((p) => [p[0] * ct + p[2] * st, p[1], -p[0] * st + p[2] * ct]);
     // playerZ (real shot distance from the hoop) computed above with the camera.
     let feet = -Infinity;
-    [27, 28, 29, 30, 31, 32].forEach((i) => { if (A[i][1] > feet) feet = A[i][1]; });
-    // Avatar now faces -z after faceHoopYaw, so place with +z (hoop is toward -z).
-    const pts = A.map((p) => [p[0], feet - p[1], p[2] + playerZ]);
+    [27, 28, 29, 30, 31, 32].forEach((i) => { if (Ay[i][1] > feet) feet = Ay[i][1]; });
+    const pts = Ay.map((p) => [p[0], feet - p[1], p[2] + playerZ]);
 
     // Shadow on floor.
     ctx.save();
@@ -3945,6 +4011,7 @@ function drawCanvas() {
   ctx.fillText(bottomLabel, 18, 25);
   ctx.restore();
 
+  updateTransportProgress();
   state.animationId = requestAnimationFrame(drawCanvas);
 }
 
@@ -3970,6 +4037,16 @@ function bindEvents() {
   nodes.sourceVideo.addEventListener("loadeddata", clearVideoIssueIfReady);
   nodes.sourceVideo.addEventListener("canplay", clearVideoIssueIfReady);
 
+  // 独自シークバー（元動画・ArcAI View 共通）。ドラッグ中は同期で上書きしない。
+  document.querySelectorAll(".seekbar").forEach((bar) => {
+    bar.addEventListener("pointerdown", () => { state.seeking = true; });
+    bar.addEventListener("input", () => { seekToFraction(Number(bar.value) / 1000); });
+    const endSeek = () => { state.seeking = false; };
+    bar.addEventListener("pointerup", endSeek);
+    bar.addEventListener("pointercancel", endSeek);
+    bar.addEventListener("change", endSeek);
+  });
+
   document.addEventListener("click", (event) => {
     const actionTarget = event.target.closest("[data-action]");
     if (actionTarget?.dataset.action === "demo") runAnalysis(null);
@@ -3980,6 +4057,8 @@ function bindEvents() {
       if (nodes.sourceVideo.paused || nodes.sourceVideo.ended) nodes.sourceVideo.play().catch(() => {});
       else nodes.sourceVideo.pause();
     }
+    if (actionTarget?.dataset.action === "frame-back") stepFrame(-1);
+    if (actionTarget?.dataset.action === "frame-fwd") stepFrame(1);
     if (actionTarget?.dataset.action === "speed-menu") {
       const popup = actionTarget.parentElement.querySelector(".speed-popup");
       const willOpen = popup?.classList.contains("hidden");
