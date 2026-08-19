@@ -988,6 +988,34 @@ button {
   color: #fff;
 }
 
+/* 黒背景ランドマークの「全身 ⇄ 拡大」切替（Full ビュー時のみ表示） */
+.frame-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.5rem 0;
+  background: rgba(255, 255, 255, 0.45);
+}
+.frame-toggle.hidden {
+  display: none;
+}
+.frame-toggle button {
+  min-height: 1.5rem;
+  min-width: 3.6rem;
+  border: 1px solid rgba(232, 223, 211, 0.95);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, 0.7);
+  color: var(--muted);
+  padding: 0 0.7rem;
+  font-size: 0.68rem;
+  font-weight: 760;
+  cursor: pointer;
+}
+.frame-toggle button.active {
+  background: var(--ink);
+  color: #fff;
+}
+
 .canvas-box::after {
   position: absolute;
   inset: 0;

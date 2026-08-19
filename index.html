@@ -8,8 +8,8 @@
       content="ArcAI basketball shot analysis app prototype with splash, upload, analyzing, and result screens."
     />
     <title>ArcAI</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=20260622-arcai-49" />
-    <link rel="stylesheet" href="./styles.css?v=20260622-arcai-49" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20260622-arcai-50" />
+    <link rel="stylesheet" href="./styles.css?v=20260622-arcai-50" />
   </head>
   <body>
     <section class="splash active" id="splash" aria-label="ArcAI splash">
@@ -159,6 +159,10 @@
               <button type="button" data-view="threed">3D</button>
               <button type="button" data-view="compare">Compare</button>
             </nav>
+            <div class="frame-toggle" id="frameToggle" aria-label="ランドマーク表示の切替">
+              <button class="active" type="button" data-framing="whole">全身</button>
+              <button type="button" data-framing="zoom">拡大</button>
+            </div>
             <div class="canvas-box">
               <canvas id="overlayCanvas" aria-label="ArcAI reconstruction"></canvas>
             </div>
@@ -176,6 +180,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20260622-arcai-49"></script>
+    <script src="./app.js?v=20260622-arcai-50"></script>
   </body>
 </html>
