@@ -16,6 +16,7 @@ const nodes = {
   rimPickLayer: document.querySelector("#rimPickLayer"),
   calibrationGuide: document.querySelector("#calibrationGuide"),
   engineStatus: document.querySelector("#engineStatus"),
+  frameToggle: document.querySelector("#frameToggle"),
   overlayCanvas: document.querySelector("#overlayCanvas"),
   metricCard: document.querySelector("#metricCard")
 };
@@ -34,6 +35,7 @@ const state = {
   selectedUrlIsObject: false,
   activeTab: "ball",
   activeView: "full",
+  poseFraming: "whole",
   cam3d: { az: 40, el: 18, dist: 13 },
   cam3dTouch: null,
   zoom2d: { scale: 1, panX: 0, panY: 0 },
@@ -3950,7 +3952,10 @@ function drawCanvas() {
         renderRect = fitPoseZoomRect(landmarks, width, height);
       }
       if (state.activeView === "full") {
-        detectBallCandidate(rect, landmarks);
+        // 「拡大」＝黒背景にランドマークのみ（コート・ボール・床反力なし）。
+        // 「全身」＝従来どおりコート＋スケルトン＋ボール＋床反力。
+        const zoomOnly = state.poseFraming === "zoom";
+        if (!zoomOnly) detectBallCandidate(rect, landmarks);
         ctx.save();
         const z = state.zoom2d;
         const fx = rect.x + rect.width / 2;
@@ -3959,9 +3964,14 @@ function drawCanvas() {
         ctx.translate(fx, fy);
         ctx.scale(z.scale, z.scale);
         ctx.translate(-fx, -fy);
-        drawCourtAndForceProxy(ctx, rect, scale, landmarks);
-        drawBallTrail(ctx, rect, scale);
-        drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
+        if (zoomOnly) {
+          const zoomRect = fitPoseZoomRect(landmarks, width, height);
+          drawPoseLandmarks(ctx, landmarks, zoomRect, scale, state.activeView);
+        } else {
+          drawCourtAndForceProxy(ctx, rect, scale, landmarks);
+          drawBallTrail(ctx, rect, scale);
+          drawPoseLandmarks(ctx, landmarks, renderRect, scale, state.activeView);
+        }
         ctx.restore();
       } else {
         drawCourtAndForceProxy(ctx, rect, scale, landmarks);
@@ -4100,6 +4110,16 @@ function bindEvents() {
       renderMetricCard();
     }
 
+    const framingTarget = event.target.closest("[data-framing]");
+    if (framingTarget) {
+      state.poseFraming = framingTarget.dataset.framing === "zoom" ? "zoom" : "whole";
+      document.querySelectorAll("[data-framing]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.framing === state.poseFraming);
+      });
+      state.zoom2d = { scale: 1, panX: 0, panY: 0 };
+      restartCanvas();
+    }
+
     const viewTarget = event.target.closest("[data-view]");
     if (viewTarget) {
       state.activeView = viewTarget.dataset.view;
@@ -4108,6 +4128,8 @@ function bindEvents() {
       document.querySelectorAll("[data-view]").forEach((button) => {
         button.classList.toggle("active", button.dataset.view === state.activeView);
       });
+      // 「全身/拡大」トグルは Full ビューのときだけ意味を持つので、その時だけ表示。
+      nodes.frameToggle?.classList.toggle("hidden", state.activeView !== "full");
       // Both the 3D and 2D-Full views capture drag/pinch, so suppress page scroll.
       nodes.overlayCanvas.classList.toggle(
         "rotatable",
